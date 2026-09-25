@@ -12,6 +12,7 @@ license = "MIT OR Apache-2.0"
 solidate-core = { path = "crates/solidate-core" }
 solidate-db = { path = "crates/solidate-db" }
 solidate-app = { path = "crates/solidate-app" }
+solidate-mcp = { path = "crates/solidate-mcp" }
 
 blake3 = "1"
 comrak = { version = "0.55", default-features = false }
@@ -26,9 +27,12 @@ subtle = "2"
 walkdir = "2"
 dotenvy = "0.15"
 tempfile = "3"
-topcoat = { version = "0.9", features = ["htmx"] }
+topcoat = { version = "0.9", features = ["htmx", "tower"] }
 percent-encoding = "2"
 thiserror = "2"
+http = "1"
+rmcp = { version = "3.4", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
+tower = { version = "0.5", features = ["util"] }
 proptest = "1"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "uuid", "time", "json"] }
 time = { version = "0.3", features = ["serde"] }

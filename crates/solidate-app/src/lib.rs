@@ -11,7 +11,7 @@ mod sync;
 
 pub use auth::{NewApiToken, TOKEN_PREFIX};
 pub use ctx::{Access, Actor, Ctx};
-pub use docs::{DocView, PutDoc, PutResult, RenderedDoc, Tree, TreeEntry};
+pub use docs::{DocView, ExpandedDoc, PutDoc, PutResult, RenderedDoc, Tree, TreeEntry};
 pub use error::{AppError, Result};
 pub use sync::{DocSync, QueueEntry, SectionText, SyncItem};
 

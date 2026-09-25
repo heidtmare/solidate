@@ -163,3 +163,6 @@ pre.diff .hunk { color: var(--muted); }
 .snippet { margin: 0.2rem 0 0; color: var(--muted); }
 .snippet mark { background: var(--warn-bg); color: var(--fg); }
 .error { text-align: center; margin-top: 3rem; }
+.bar { margin: 0.6rem 0; }
+.dot { display: inline-block; width: 0.5em; height: 0.5em; border-radius: 50%; margin-left: 0.35rem; vertical-align: middle; background: var(--warn); }
+.dot.conflict { background: var(--del-fg); }

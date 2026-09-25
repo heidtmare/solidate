@@ -1,7 +1,9 @@
 //! Sync queue, per-document sync status, item detail (htmx), resolution.
+//! Resolve form `anchor`: a section anchor, `*` for all pending sections, `+` for
+//! pending sections present in both variants.
 
 use serde::Deserialize;
-use solidate_app::core::{DocPath, Variant};
+use solidate_app::core::{DocPath, SyncState, Variant};
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::{Form, Html};
@@ -18,10 +20,10 @@ fn doc_path(cx: &Cx) -> Result<DocPath> {
     DocPath::parse(&joined).map_err(|e| bad_request(e.to_string()).into())
 }
 
-fn state_class(s: solidate_app::core::SyncState) -> &'static str {
+pub fn state_class(s: SyncState) -> &'static str {
     match s {
-        solidate_app::core::SyncState::InSync => "state ok",
-        solidate_app::core::SyncState::Conflict => "state conflict",
+        SyncState::InSync => "state ok",
+        SyncState::Conflict => "state conflict",
         _ => "state stale",
     }
 }
@@ -67,12 +69,12 @@ async fn doc_sync(cx: &Cx) -> Result<impl View> {
     let s = app(cx).doc_sync(&ctx, project, &path).await.or_http()?;
     let (t, p, ps) = (ctx.tenant.slug.clone(), project.to_owned(), path.as_str().to_owned());
     let base = project_url(&t, &p);
-    let pending: Vec<String> = s
+    let pending = s.sections.iter().filter(|x| x.state.needs_attention()).count();
+    let paired = s
         .sections
         .iter()
-        .filter(|x| x.state.needs_attention())
-        .map(|x| x.anchor.clone())
-        .collect();
+        .filter(|x| x.state.needs_attention() && x.in_human && x.in_ai)
+        .count();
     Ok(view! {
         <nav class="crumbs">
             <a href=(tenant_url(&t))>(ctx.tenant.name.as_str())</a>
@@ -92,13 +94,22 @@ async fn doc_sync(cx: &Cx) -> Result<impl View> {
             <span class="muted">(if s.document.sync_enabled { "Sync tracking is on. " } else { "Sync tracking is off. " })</span>
             <button type="submit" class="link">(if s.document.sync_enabled { "Turn off" } else { "Turn on" })</button>
         </form>
-        if !pending.is_empty() {
-            <form method="post" action=(format!("{base}/resolve/{ps}")) class="inline"
-                  onsubmit="return confirm('Mark every section as in sync without editing?')">
-                <input type="hidden" name="anchor" value="*">
-                <button type="submit" class="secondary">"Mark all in sync"</button>
-            </form>
-        }
+        <div class="actions bar">
+            if paired > 0 && paired < pending {
+                <form method="post" action=(format!("{base}/resolve/{ps}")) class="inline"
+                      onsubmit="return confirm('Mark sections present in both variants as in sync without editing?')">
+                    <input type="hidden" name="anchor" value="+">
+                    <button type="submit" class="secondary">(format!("Mark paired in sync ({paired})"))</button>
+                </form>
+            }
+            if pending > 0 {
+                <form method="post" action=(format!("{base}/resolve/{ps}")) class="inline"
+                      onsubmit="return confirm('Mark every section as in sync without editing?')">
+                    <input type="hidden" name="anchor" value="*">
+                    <button type="submit" class="secondary">(format!("Mark all in sync ({pending})"))</button>
+                </form>
+            }
+        </div>
         <table class="docs">
             <thead><tr><th>"Section"</th><th>"State"</th><th></th></tr></thead>
             <tbody>
@@ -112,6 +123,10 @@ async fn doc_sync(cx: &Cx) -> Result<impl View> {
                         <td><span class=(state_class(sec.state))>(sec.state.as_str())</span></td>
                         <td class="actions">
                             if sec.state.needs_attention() {
+                                match sec.stale_side {
+                                    Some(v) => <a href=(propagate_url(&t, &p, &ps, v, &sec.anchor))>(if v == Variant::Ai { "Update AI" } else { "Update human" })</a>,
+                                    None => "",
+                                }
                                 <button type="button" class="link"
                                     hx-get=(format!("{base}/sync-item/{ps}?anchor={}", enc(&sec.anchor)))
                                     hx-target=(format!("#{detail_id}")) hx-swap="innerHTML">"Details"</button>
@@ -134,7 +149,15 @@ struct AnchorQuery {
     anchor: String,
 }
 
-/// Fragment with both sides' text and diffs since the last sync.
+/// URL of the editor for `v`, saving with `anchor` marked in sync.
+pub fn propagate_url(t: &str, p: &str, path: &str, v: Variant, anchor: &str) -> String {
+    let url = action_url(t, p, "edit", path, v);
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}resolves={}", enc(anchor))
+}
+
+/// Fragment with both sides' text, diffs since the last sync, and the base text
+/// for conflicts.
 #[route(GET "/t/{tenant}/p/{project}/sync-item/{*path}")]
 async fn sync_item(cx: &Cx) -> Result<Html<String>> {
     let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
@@ -144,23 +167,35 @@ async fn sync_item(cx: &Cx) -> Result<Html<String>> {
         .sync_item(&ctx, project, &path, &anchor.anchor)
         .await
         .or_http()?;
+    let (t, ps) = (ctx.tenant.slug.as_str(), path.as_str());
+    let conflict = item.state == SyncState::Conflict;
 
     let mut html = String::from("<div class=\"sync-item\">");
-    for (label, diff, text) in [
-        ("Human", &item.human_diff, &item.human),
-        ("AI", &item.ai_diff, &item.ai),
+    for (v, diff, text, base) in [
+        (Variant::Human, &item.human_diff, &item.human, &item.human_base),
+        (Variant::Ai, &item.ai_diff, &item.ai, &item.ai_base),
     ] {
+        let label = if v == Variant::Human { "Human" } else { "AI" };
         html.push_str(&format!("<div><h3>{label}</h3>"));
-        match diff {
-            Some(d) if !d.is_empty() => {
-                html.push_str("<p class=\"small muted\">Changes since last sync</p>");
-                html.push_str(&diff_html(d).0);
-            }
-            _ => {}
+        if let Some(d) = diff.as_deref().filter(|d| !d.is_empty()) {
+            html.push_str("<p class=\"small muted\">Changes since last sync</p>");
+            html.push_str(&diff_html(d).0);
         }
         match text {
             Some(t) => html.push_str(&format!("<pre class=\"source\">{}</pre>", escape(&t.body))),
             None => html.push_str("<p class=\"muted\">Section not present.</p>"),
+        }
+        if conflict && let Some(b) = base {
+            html.push_str(&format!(
+                "<details><summary class=\"small\">Text at last sync</summary><pre class=\"source\">{}</pre></details>",
+                escape(b)
+            ));
+        }
+        if conflict || item.stale_side == Some(v) {
+            html.push_str(&format!(
+                "<p><a class=\"button secondary\" href=\"{}\">Update {label}</a></p>",
+                escape(&propagate_url(t, project, ps, v, &item.anchor))
+            ));
         }
         html.push_str("</div>");
     }
@@ -178,6 +213,13 @@ async fn resolve(cx: &Cx, Form(form): Form<ResolveForm>) -> Result<SeeOther> {
     let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
     let (project, path) = (path_param_segment(cx, "project"), doc_path(cx)?);
     let app = app(cx);
+    if form.anchor == "+" {
+        app.resolve_paired_sync(&ctx, project, &path).await.or_http()?;
+        return Ok(see_other(format!(
+            "{}/sync/{path}",
+            project_url(&ctx.tenant.slug, project)
+        )));
+    }
     let anchors = if form.anchor == "*" {
         let s = app.doc_sync(&ctx, project, &path).await.or_http()?;
         s.sections

@@ -1,9 +1,11 @@
 //! Solidate server: server-rendered UI on Topcoat.
 
+mod api;
 mod assets;
 mod auth;
 mod error;
 mod layout;
+mod mcp;
 mod pages;
 mod ui;
 
@@ -16,6 +18,9 @@ use topcoat::session::{RouterBuilderSessionExt, SessionConfig, cookie::CookieTok
 pub struct WebConfig {
     /// Use a non-`Secure` session cookie (plain-HTTP development only).
     pub insecure_cookies: bool,
+    /// Absolute base URL (no trailing slash) used in `llms.txt` links. Relative
+    /// links when `None`.
+    pub public_url: Option<String>,
 }
 
 pub fn router(app: App, web: WebConfig) -> Router {
@@ -25,10 +30,13 @@ pub fn router(app: App, web: WebConfig) -> Router {
     } else {
         sessions.token_store(CookieTokenStore::new())
     };
+    let mcp = mcp::route(app.clone(), web.public_url.as_deref());
     Router::builder()
         .discover()
+        .route(mcp)
         .cookies()
         .sessions(sessions.build())
         .app_context(app)
+        .app_context(web)
         .build()
 }

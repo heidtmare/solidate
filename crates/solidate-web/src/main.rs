@@ -10,6 +10,9 @@ async fn main() {
     let app = App::new(db, Config::default());
     let web = WebConfig {
         insecure_cookies: std::env::var("SOLIDATE_INSECURE_COOKIES").is_ok_and(|v| v == "1"),
+        public_url: std::env::var("SOLIDATE_PUBLIC_URL")
+            .ok()
+            .map(|u| u.trim_end_matches('/').to_owned()),
     };
     topcoat::start(solidate_web::router(app, web)).await.expect("server");
 }

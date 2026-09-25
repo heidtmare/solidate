@@ -1,26 +1,23 @@
 [package]
-name = "solidate-web"
-description = "Solidate server: server-rendered UI (Topcoat) and HTTP API."
+name = "solidate-mcp"
+description = "Solidate MCP server: tools and resources over stdio and streamable HTTP."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "solidate-server"
+name = "solidate-mcp"
 path = "src/main.rs"
 
 [dependencies]
 solidate-app.workspace = true
-solidate-mcp.workspace = true
-blake3.workspace = true
 dotenvy.workspace = true
-percent-encoding.workspace = true
+http.workspace = true
+rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-time.workspace = true
-tokio.workspace = true
-topcoat.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
 tower.workspace = true
 
 [dev-dependencies]

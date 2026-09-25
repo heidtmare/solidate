@@ -89,7 +89,13 @@ async fn setup(pool: PgPoolOptions, opts: PgConnectOptions) -> (App, Client) {
     .await
     .unwrap();
     let client = Client {
-        router: router(app.clone(), WebConfig { insecure_cookies: true }),
+        router: router(
+            app.clone(),
+            WebConfig {
+                insecure_cookies: true,
+                public_url: None,
+            },
+        ),
         cookie: None,
     };
     (app, client)
@@ -182,4 +188,44 @@ async fn non_member_is_forbidden(pool: PgPoolOptions, opts: PgConnectOptions) {
     .await;
     let r = c.get("/t/acme/p/app").await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn propagate_section_through_editor(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, mut c) = setup(pool, opts).await;
+    c.post(
+        "/login",
+        &[("email", "ada@acme.dev"), ("password", "long-enough-pw"), ("next", "/")],
+    )
+    .await;
+
+    let r = c.get("/t/acme/p/app/sync/design/auth").await;
+    assert!(r.body.contains("/t/acme/p/app/edit/design/auth?v=ai&amp;resolves=auth"));
+
+    let r = c.get("/t/acme/p/app/edit/design/auth?v=ai&resolves=auth").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("Saving marks section #auth as in sync."));
+    assert!(r.body.contains(r#"name="resolves" value="auth""#));
+
+    let r = c
+        .post(
+            "/t/acme/p/app/edit/design/auth?v=ai",
+            &[
+                ("content", "# Auth\n\n- tokens: opaque\n"),
+                ("base", ""),
+                ("message", ""),
+                ("resolves", "auth"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        (r.status, r.location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/t/acme/p/app/sync/design/auth"))
+    );
+    let r = c.get("/t/acme/p/app/sync").await;
+    assert!(r.body.contains("All sections are in sync."));
+
+    // Unknown anchors are rejected.
+    let r = c.get("/t/acme/p/app/edit/design/auth?v=ai&resolves=nope").await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
 }

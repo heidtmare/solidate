@@ -134,6 +134,11 @@ pub const SNIPPET_START: char = '\u{E000}';
 pub const SNIPPET_END: char = '\u{E001}';
 
 impl SearchHit {
+    /// The snippet without match delimiters.
+    pub fn snippet_text(&self) -> String {
+        self.snippet.replace([SNIPPET_START, SNIPPET_END], "")
+    }
+
     /// The snippet HTML-escaped, with matches wrapped in `<mark>`.
     pub fn snippet_html(&self) -> String {
         let mut out = String::with_capacity(self.snippet.len() + 16);

@@ -3,9 +3,11 @@
 use solidate_app::core::Variant;
 use topcoat::Result;
 use topcoat::context::Cx;
-use topcoat::router::{page, path_param_segment, query_params};
+use topcoat::context::app_context;
+use topcoat::router::{page, path_param_segment, query_params, route};
 use topcoat::view::{View, view};
 
+use crate::WebConfig;
 use crate::auth::{app, tenant_ctx};
 use crate::error::OrHttp;
 use crate::ui::{Trusted, doc_url, fmt_time, project_url, tenant_url};
@@ -32,6 +34,7 @@ async fn project_home(cx: &Cx) -> Result<impl View> {
                 <a class="button secondary" href=(format!("{}/sync", project_url(&t, &p)))>
                     "Sync queue " <span class="count">(queue.len())</span>
                 </a>
+                <a class="button secondary" href=(format!("{}/llms.txt", project_url(&t, &p)))>"llms.txt"</a>
             </div>
         </div>
         if !ancestors.is_empty() {
@@ -114,4 +117,20 @@ async fn search(cx: &Cx) -> Result<impl View> {
             }
         </ol>
     })
+}
+
+/// `llms.txt` for signed-in browser sessions; the same index as the API route.
+#[route(GET "/t/{tenant}/p/{project}/llms.txt")]
+async fn llms_txt(cx: &Cx) -> Result<(topcoat::router::HeaderMap, String)> {
+    let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
+    let base = app_context::<WebConfig>(cx).public_url.as_deref().unwrap_or("");
+    let body = crate::api::llms_txt(app(cx), &ctx, path_param_segment(cx, "project"), base)
+        .await
+        .map_err(|_| topcoat::router::error::not_found())?;
+    let mut headers = topcoat::router::HeaderMap::new();
+    headers.insert(
+        topcoat::router::header::CONTENT_TYPE,
+        topcoat::router::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    Ok((headers, body))
 }

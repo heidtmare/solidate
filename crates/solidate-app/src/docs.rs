@@ -64,6 +64,15 @@ pub struct RenderedDoc {
     pub dependencies: Vec<Dependency>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ExpandedDoc {
+    pub view: DocView,
+    pub text: Option<String>,
+    /// Content hash combined with the hashes of all included content.
+    pub resolved_hash: Option<Hash>,
+    pub dependencies: Vec<Dependency>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TreeEntry {
     pub path: String,
@@ -318,25 +327,23 @@ impl App {
         Ok(links)
     }
 
-    /// Renders a variant to HTML with includes expanded. `href` maps internal link
-    /// targets to URLs; unqualified targets refer to `project`.
-    pub async fn render_doc(
+    /// A variant with includes expanded. `text` is `None` when the variant has not
+    /// been written.
+    pub async fn expanded_doc(
         &self,
         ctx: &Ctx,
         project: &str,
         path: &DocPath,
         variant: Variant,
-        href: &(dyn Fn(&LinkTarget) -> Option<String> + Sync),
-    ) -> Result<RenderedDoc> {
+    ) -> Result<ExpandedDoc> {
         let mut tx = self.tx(ctx).await?;
         let p = project_by_slug(&mut tx, project).await?;
         ctx.require(Access::Read, Some(&p))?;
         let v = view(&mut tx, &p, path, variant).await?;
         let Some(head) = &v.head else {
-            return Ok(RenderedDoc {
+            return Ok(ExpandedDoc {
                 view: v,
-                html: String::new(),
-                outline: Vec::new(),
+                text: None,
                 resolved_hash: None,
                 dependencies: Vec::new(),
             });
@@ -360,14 +367,33 @@ impl App {
             &mut |t: &LinkTarget| sources.get(&include_key(t)).cloned(),
             DEFAULT_MAX_DEPTH,
         );
-        let rendered = render_html(&expansion.text, Some(path), href);
         let resolved_hash = Some(expansion.resolved_hash(head.content_hash));
-        Ok(RenderedDoc {
-            html: rendered.html,
-            outline: rendered.outline,
+        Ok(ExpandedDoc {
+            view: v,
+            text: Some(expansion.text),
             resolved_hash,
             dependencies: expansion.dependencies,
-            view: v,
+        })
+    }
+
+    /// Renders a variant to HTML with includes expanded. `href` maps internal link
+    /// targets to URLs; unqualified targets refer to `project`.
+    pub async fn render_doc(
+        &self,
+        ctx: &Ctx,
+        project: &str,
+        path: &DocPath,
+        variant: Variant,
+        href: &(dyn Fn(&LinkTarget) -> Option<String> + Sync),
+    ) -> Result<RenderedDoc> {
+        let e = self.expanded_doc(ctx, project, path, variant).await?;
+        let rendered = e.text.as_deref().map(|t| render_html(t, Some(path), href));
+        Ok(RenderedDoc {
+            html: rendered.as_ref().map(|r| r.html.clone()).unwrap_or_default(),
+            outline: rendered.map(|r| r.outline).unwrap_or_default(),
+            resolved_hash: e.resolved_hash,
+            dependencies: e.dependencies,
+            view: e.view,
         })
     }
 }

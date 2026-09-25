@@ -1,7 +1,7 @@
 //! Document view, editor, creation, history, deletion, and Markdown preview.
 
 use serde::Deserialize;
-use solidate_app::core::{DocPath, Hash, Variant, render_html};
+use solidate_app::core::{DocPath, Hash, SyncState, Variant, render_html};
 use solidate_app::db::Expect;
 use solidate_app::{AppError, PutDoc};
 use topcoat::Result;
@@ -23,10 +23,19 @@ fn doc_path(cx: &Cx) -> Result<DocPath> {
 #[query_params]
 struct VariantQuery {
     v: Option<String>,
+    /// Section anchor the edit propagates; saving marks it in sync.
+    resolves: Option<String>,
 }
 
 fn variant(cx: &Cx) -> Variant {
     parse_variant(query_params::<VariantQuery>(cx).ok().and_then(|q| q.v.as_deref()))
+}
+
+fn resolves_param(cx: &Cx) -> Option<String> {
+    query_params::<VariantQuery>(cx)
+        .ok()
+        .and_then(|q| q.resolves.clone())
+        .filter(|a| !a.is_empty())
 }
 
 #[component]
@@ -67,6 +76,12 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
     let stale = sync
         .as_ref()
         .map_or(0, |s| s.sections.iter().filter(|x| x.state.needs_attention()).count());
+    let pending: std::collections::HashMap<String, SyncState> = sync
+        .iter()
+        .flat_map(|s| &s.sections)
+        .filter(|x| x.state.needs_attention())
+        .map(|x| (x.anchor.clone(), x.state))
+        .collect();
     let (p, ps) = (project.to_owned(), path.as_str().to_owned());
     let title = r.view.document.title.clone().unwrap_or_else(|| ps.clone());
     let head = r.view.head.clone();
@@ -111,7 +126,13 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
                     <h2>"Contents"</h2>
                     <ul class="outline">
                         for o in &r.outline {
-                            <li class=(format!("l{}", o.level))><a href=(format!("#{}", o.anchor))>(o.title.clone())</a></li>
+                            <li class=(format!("l{}", o.level))>
+                                <a href=(format!("#{}", o.anchor))>(o.title.clone())</a>
+                                match pending.get(&o.anchor) {
+                                    Some(st) => <span class=(if *st == SyncState::Conflict { "dot conflict" } else { "dot" }) title=(st.as_str())></span>,
+                                    None => "",
+                                }
+                            </li>
                         }
                     </ul>
                 }
@@ -158,6 +179,7 @@ async fn editor(
     base: String,
     #[default] path_field: bool,
     #[default] notice: Option<String>,
+    #[default] resolves: Option<String>,
 ) -> Result<impl View> {
     Ok(view! {
         match notice {
@@ -166,6 +188,10 @@ async fn editor(
         }
         <form method="post" action=(action) class="editor">
             <input type="hidden" name="base" value=(base)>
+            match resolves {
+                Some(a) => <input type="hidden" name="resolves" value=(a)>,
+                None => "",
+            }
             if path_field {
                 <label>"Path" <input type="text" name="path" required="" placeholder="design/overview" pattern="[A-Za-z0-9._/\\-]+"></label>
             }
@@ -208,17 +234,48 @@ async fn edit(cx: &Cx) -> Result<impl View> {
         (None, Variant::Human) => String::new(),
     };
     let base = head.map(|h| h.content_hash.to_hex()).unwrap_or_default();
+    let resolves = resolves_param(cx);
+    let reference = match &resolves {
+        Some(a) => Some(app(cx).sync_item(&ctx, project, &path, a).await.or_http()?),
+        None => None,
+    };
+    let other = match v {
+        Variant::Human => Variant::Ai,
+        Variant::Ai => Variant::Human,
+    };
     Ok(view! {
         crumbs(tenant: t.clone(), tenant_name: ctx.tenant.name.clone(), project: p.clone(), path: Some(ps.clone()))
         <h1>(format!("Edit {ps} ({v})"))</h1>
         if inherited {
             <p class="notice">"Saving creates an override of the inherited document in this project."</p>
         }
+        match &reference {
+            Some(item) => {
+                let (text, diff) = match other {
+                    Variant::Human => (&item.human, &item.human_diff),
+                    Variant::Ai => (&item.ai, &item.ai_diff),
+                };
+                <p class="notice">(format!("Saving marks section #{} as in sync.", item.anchor))</p>
+                <details open="">
+                    <summary>(format!("{other} variant of #{}", item.anchor))</summary>
+                    match diff.as_deref().filter(|d| !d.is_empty()) {
+                        Some(d) => (diff_html(d)),
+                        None => "",
+                    }
+                    match text {
+                        Some(x) => <pre class="source">(x.body.clone())</pre>,
+                        None => <p class="muted">"Section not present."</p>,
+                    }
+                </details>
+            },
+            None => "",
+        }
         editor(
             action: action_url(&t, &p, "edit", &ps, v),
             cancel: doc_url(&t, &p, &ps, v),
             content: content,
             base: base,
+            resolves: resolves,
         )
     })
 }
@@ -229,6 +286,7 @@ struct EditForm {
     base: String,
     message: Option<String>,
     path: Option<String>,
+    resolves: Option<String>,
 }
 
 fn expect_from(base: &str) -> Result<Expect> {
@@ -247,6 +305,7 @@ async fn edit_submit(cx: &Cx, Form(form): Form<EditForm>) -> Result<impl View> {
     let (t, p, ps) = (ctx.tenant.slug.clone(), project.to_owned(), path.as_str().to_owned());
     let content = form.content.replace("\r\n", "\n");
     let message = form.message.as_deref().map(str::trim).filter(|m| !m.is_empty());
+    let resolves: Vec<String> = form.resolves.clone().filter(|a| !a.is_empty()).into_iter().collect();
     let result = app(cx)
         .put_doc(
             &ctx,
@@ -257,11 +316,12 @@ async fn edit_submit(cx: &Cx, Form(form): Form<EditForm>) -> Result<impl View> {
                 content: &content,
                 expect: expect_from(&form.base)?,
                 message,
-                resolves: &[],
+                resolves: &resolves,
             },
         )
         .await;
     match result {
+        Ok(_) if !resolves.is_empty() => Err(see_other(format!("{}/sync/{ps}", project_url(&t, &p))).into()),
         Ok(_) => Err(see_other(doc_url(&t, &p, &ps, v)).into()),
         Err(AppError::PreconditionFailed { current }) => Ok(view! {
             (StatusCode::CONFLICT)
@@ -273,6 +333,7 @@ async fn edit_submit(cx: &Cx, Form(form): Form<EditForm>) -> Result<impl View> {
                 content: content,
                 base: current.map(|h| h.to_hex()).unwrap_or_default(),
                 notice: Some("This document was changed by someone else while you were editing. Your text is kept below; review the current version, then save again to overwrite it.".to_owned()),
+                resolves: resolves.into_iter().next(),
             )
         }),
         Err(e) => Err(http(e)),

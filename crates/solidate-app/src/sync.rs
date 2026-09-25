@@ -82,6 +82,9 @@ pub struct SectionStatus {
     pub title: String,
     pub state: SyncState,
     pub stale_side: Option<Variant>,
+    /// Whether the section exists in each variant.
+    pub in_human: bool,
+    pub in_ai: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -149,6 +152,8 @@ impl App {
                 title: titles.get(s.anchor.as_str()).copied().unwrap_or_default().to_owned(),
                 state: s.state,
                 stale_side: s.state.stale_side(),
+                in_human: s.human.is_some(),
+                in_ai: s.ai.is_some(),
             })
             .collect();
         Ok(DocSync {

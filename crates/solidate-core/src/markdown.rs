@@ -13,10 +13,10 @@ use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 
-use comrak::adapters::{HeadingAdapter, HeadingMeta};
+use comrak::adapters::{CodefenceRendererAdapter, HeadingAdapter, HeadingMeta};
 use comrak::nodes::{AstNode, NodeValue, Sourcepos};
 use comrak::options::Plugins;
-use comrak::{Arena, Options, format_html_with_plugins, markdown_to_commonmark, parse_document};
+use comrak::{Arena, Options, format_html_with_plugins, html, markdown_to_commonmark, parse_document};
 use serde::{Deserialize, Serialize};
 
 use crate::hash::Hash;
@@ -322,7 +322,8 @@ pub struct OutlineEntry {
 
 /// Renders `md` to HTML that's safe to embed: raw HTML is omitted and headings get
 /// their section anchors as `id`s. `href` maps each internal link target to a URL.
-/// Links it returns `None` for are left unchanged.
+/// Links it returns `None` for are left unchanged. `mermaid` code fences render as
+/// `<pre class="mermaid">` with escaped source, for client-side diagram rendering.
 pub fn render_html(md: &str, base: Option<&DocPath>, href: &dyn Fn(&LinkTarget) -> Option<String>) -> Rendered {
     let opts = options();
     let arena = Arena::new();
@@ -349,6 +350,10 @@ pub fn render_html(md: &str, base: Option<&DocPath>, href: &dyn Fn(&LinkTarget) 
     let adapter = AnchoredHeadings(Mutex::new(headings.iter().map(|h| h.anchor.clone()).collect()));
     let mut plugins = Plugins::default();
     plugins.render.heading_adapter = Some(&adapter);
+    plugins
+        .render
+        .codefence_renderers
+        .insert("mermaid".to_owned(), &Mermaid);
     let mut html = String::new();
     format_html_with_plugins(root, &opts, &mut html, &plugins).expect("writing to a String cannot fail");
 
@@ -380,6 +385,17 @@ impl HeadingAdapter for AnchoredHeadings {
 
     fn exit(&self, out: &mut dyn fmt::Write, h: &HeadingMeta) -> fmt::Result {
         writeln!(out, "</h{}>", h.level)
+    }
+}
+
+/// Emits `mermaid` code fences as `<pre class="mermaid">` for the client-side renderer.
+struct Mermaid;
+
+impl CodefenceRendererAdapter for Mermaid {
+    fn write(&self, out: &mut dyn fmt::Write, _: &str, _: &str, code: &str, _: Option<Sourcepos>) -> fmt::Result {
+        out.write_str("<pre class=\"mermaid\">")?;
+        html::escape(out, code)?;
+        out.write_str("</pre>\n")
     }
 }
 
@@ -454,6 +470,22 @@ mod tests {
                 anchor: "hi".into()
             }]
         );
+    }
+
+    #[test]
+    fn renders_mermaid_fences_as_escaped_pre() {
+        let r = render_html(
+            "```mermaid\ngraph TD\n  A-->B<script>\n```\n\n```rust\nfn x() {}\n```\n",
+            None,
+            &|_| None,
+        );
+        assert!(
+            r.html
+                .contains("<pre class=\"mermaid\">graph TD\n  A--&gt;B&lt;script&gt;\n</pre>"),
+            "{}",
+            r.html
+        );
+        assert!(r.html.contains(r#"<code class="language-rust">"#));
     }
 
     #[test]

@@ -136,6 +136,7 @@ tr.detail td { border-bottom: none; padding: 0; }
 .markdown .anchor { color: var(--line); margin-right: 0.35rem; text-decoration: none; }
 .markdown h1:hover .anchor, .markdown h2:hover .anchor, .markdown h3:hover .anchor { color: var(--muted); }
 .markdown pre { background: var(--soft); padding: 0.8rem; border-radius: var(--radius); overflow-x: auto; }
+.markdown pre.mermaid { background: none; text-align: center; }
 .markdown :not(pre) > code { background: var(--soft); padding: 0.1em 0.3em; border-radius: 4px; }
 .markdown table { border-collapse: collapse; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 0.3rem 0.6rem; }

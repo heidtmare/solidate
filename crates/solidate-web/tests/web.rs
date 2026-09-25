@@ -172,6 +172,46 @@ async fn login_view_edit_conflict_logout(pool: PgPoolOptions, opts: PgConnectOpt
 }
 
 #[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn mermaid_preview_and_assets(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, mut c) = setup(pool, opts).await;
+    c.post(
+        "/login",
+        &[("email", "ada@acme.dev"), ("password", "long-enough-pw"), ("next", "/")],
+    )
+    .await;
+
+    let r = c
+        .post("/preview", &[("content", "```mermaid\ngraph TD\n  A-->B\n```\n")])
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(
+        r.body.contains("<pre class=\"mermaid\">graph TD\n  A--&gt;B\n</pre>"),
+        "{}",
+        r.body
+    );
+
+    let page = c.get("/t/acme/p/app").await.body;
+    let src = page
+        .split(r#"data-mermaid=""#)
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_owned();
+    let app_js = page
+        .split(r#"<script src=""#)
+        .find(|s| s.starts_with("/static/app.js"))
+        .unwrap();
+    let app_js = app_js.split('"').next().unwrap().to_owned();
+    for url in [app_js, src] {
+        let r = c.get(&url).await;
+        assert_eq!(r.status, StatusCode::OK, "{url}");
+        assert!(!r.body.is_empty(), "{url}");
+    }
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
 async fn non_member_is_forbidden(pool: PgPoolOptions, opts: PgConnectOptions) {
     let (app, mut c) = setup(pool, opts).await;
     app.register_user("eve@other.dev", "Eve", "long-enough-pw")

@@ -318,6 +318,29 @@ impl TenantTx {
             .await?)
     }
 
+    /// Content hash of the newest revision of `variant` that contains section
+    /// `anchor` with semantic hash `hash`.
+    pub async fn content_with_section(
+        &mut self,
+        document: DocumentId,
+        variant: Variant,
+        anchor: &str,
+        hash: Hash,
+    ) -> Result<Option<Hash>> {
+        Ok(sqlx::query_scalar(
+            "SELECT r.content_hash FROM sections s
+             JOIN revisions r ON r.tenant_id = s.tenant_id AND r.id = s.revision_id
+             WHERE r.document_id = $1 AND r.variant = $2 AND s.anchor = $3 AND s.hash = $4
+             ORDER BY r.created_at DESC, r.id DESC LIMIT 1",
+        )
+        .bind(document)
+        .bind(variant)
+        .bind(anchor)
+        .bind(hash)
+        .fetch_optional(self.conn())
+        .await?)
+    }
+
     pub async fn sections(&mut self, revision: RevisionId) -> Result<Vec<SectionRow>> {
         Ok(sqlx::query_as(
             "SELECT ordinal, anchor, title, level, parent_anchor, hash

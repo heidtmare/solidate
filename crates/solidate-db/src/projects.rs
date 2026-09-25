@@ -7,6 +7,13 @@ use crate::models::*;
 use crate::{DbError, Result, TenantTx};
 
 impl TenantTx {
+    /// The tenant this transaction is scoped to.
+    pub async fn tenant_row(&mut self) -> Result<Tenant> {
+        Ok(sqlx::query_as("SELECT * FROM tenants WHERE id = current_tenant()")
+            .fetch_one(self.conn())
+            .await?)
+    }
+
     pub async fn create_project(&mut self, slug: &Slug, name: &str, parent: Option<ProjectId>) -> Result<Project> {
         Ok(
             sqlx::query_as("INSERT INTO projects (id, slug, name, parent_id) VALUES ($1, $2, $3, $4) RETURNING *")

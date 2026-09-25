@@ -11,6 +11,7 @@ blake3.workspace = true
 comrak.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+similar.workspace = true
 thiserror.workspace = true
 sqlx = { workspace = true, optional = true }
 

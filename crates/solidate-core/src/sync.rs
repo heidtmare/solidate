@@ -169,11 +169,18 @@ impl SectionSync {
     }
 }
 
+/// `(anchor, hash)` pairs of analyzed sections, for [`plan`].
+pub fn section_hashes(sections: &[Section]) -> Vec<(&str, Hash)> {
+    sections.iter().map(|s| (s.anchor.as_str(), s.hash)).collect()
+}
+
 /// Classifies every section pair in a document. The result is ordered by the human
 /// variant, then AI-only sections in AI order, then pairs left only in `bases`.
-pub fn plan(human: &[Section], ai: &[Section], bases: &HashMap<String, SyncBase>) -> Vec<SectionSync> {
-    let h: HashMap<&str, Hash> = human.iter().map(|s| (s.anchor.as_str(), s.hash)).collect();
-    let a: HashMap<&str, Hash> = ai.iter().map(|s| (s.anchor.as_str(), s.hash)).collect();
+///
+/// `human` and `ai` are `(anchor, semantic hash)` pairs in document order.
+pub fn plan(human: &[(&str, Hash)], ai: &[(&str, Hash)], bases: &HashMap<String, SyncBase>) -> Vec<SectionSync> {
+    let h: HashMap<&str, Hash> = human.iter().copied().collect();
+    let a: HashMap<&str, Hash> = ai.iter().copied().collect();
 
     let mut order: Vec<&str> = Vec::new();
     let mut seen = HashSet::new();
@@ -181,8 +188,8 @@ pub fn plan(human: &[Section], ai: &[Section], bases: &HashMap<String, SyncBase>
     base_keys.sort_unstable();
     let candidates = human
         .iter()
-        .map(|s| s.anchor.as_str())
-        .chain(ai.iter().map(|s| s.anchor.as_str()))
+        .map(|(a, _)| *a)
+        .chain(ai.iter().map(|(a, _)| *a))
         .chain(base_keys);
     for anchor in candidates {
         if seen.insert(anchor) {
@@ -270,7 +277,7 @@ mod tests {
                 },
             ),
         ]);
-        let p = plan(&human.sections, &ai.sections, &bases);
+        let p = plan(&section_hashes(&human.sections), &section_hashes(&ai.sections), &bases);
         let got: Vec<_> = p.iter().map(|s| (s.anchor.as_str(), s.state)).collect();
         assert_eq!(
             got,

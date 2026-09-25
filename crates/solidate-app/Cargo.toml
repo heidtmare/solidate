@@ -1,0 +1,23 @@
+[package]
+name = "solidate-app"
+description = "Solidate use-case services shared by the web and MCP front ends."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+solidate-core.workspace = true
+solidate-db.workspace = true
+argon2.workspace = true
+blake3.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true
+tokio.workspace = true

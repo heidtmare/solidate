@@ -11,7 +11,7 @@ use topcoat::view::{View, component, view};
 
 use crate::auth::{app, end_session, require_user, start_session, tenant_ctx};
 use crate::error::OrHttp;
-use crate::ui::{project_url, safe_next, tenant_url};
+use crate::ui::{enc, project_url, safe_next, tenant_url};
 
 #[page("/")]
 async fn home(cx: &Cx) -> Result<impl View> {
@@ -53,13 +53,24 @@ struct LoginForm {
     next: Option<String>,
 }
 
+/// `sso` is the OpenID Connect provider label when that sign-in is enabled.
 #[component]
-async fn login_form(next: String, #[default] error: Option<String>, #[default] email: String) -> Result<impl View> {
+pub(super) async fn login_form(
+    next: String,
+    #[default] error: Option<String>,
+    #[default] email: String,
+    #[default] sso: Option<String>,
+) -> Result<impl View> {
+    let sso_href = format!("/login/oidc?next={}", enc(&next));
     Ok(view! {
         <section class="narrow">
             <h1>"Sign in"</h1>
             match error {
                 Some(e) => <p class="alert">(e)</p>,
+                None => "",
+            }
+            match sso {
+                Some(label) => <p><a class="button" href=(sso_href)>"Sign in with " (label)</a></p>,
                 None => "",
             }
             <form method="post" action="/login" class="stack">
@@ -72,11 +83,16 @@ async fn login_form(next: String, #[default] error: Option<String>, #[default] e
     })
 }
 
+pub(super) fn sso_label(cx: &Cx) -> Option<String> {
+    app(cx).oidc().map(|o| o.label().to_owned())
+}
+
 #[page("/login")]
 async fn login(cx: &Cx) -> Result<impl View> {
     let q = query_params::<LoginQuery>(cx).ok();
     let next = safe_next(q.and_then(|q| q.next.as_deref()));
-    Ok(view! { login_form(next: next) })
+    let sso = sso_label(cx);
+    Ok(view! { login_form(next: next, sso: sso) })
 }
 
 #[page(POST "/login")]
@@ -89,7 +105,7 @@ async fn login_submit(cx: &Cx, Form(form): Form<LoginForm>) -> Result<impl View>
         }
         Err(solidate_app::AppError::Unauthorized) => Ok(view! {
             (StatusCode::UNAUTHORIZED)
-            login_form(next: next, error: Some("Invalid email or password.".to_owned()), email: form.email)
+            login_form(next: next, error: Some("Invalid email or password.".to_owned()), email: form.email, sso: sso_label(cx))
         }),
         Err(e) => Err(crate::error::http(e)),
     }

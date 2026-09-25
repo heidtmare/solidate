@@ -334,3 +334,77 @@ async fn review_translation_proposal(pool: PgPoolOptions, opts: PgConnectOptions
     let r = c.get("/t/acme/p/app/sync").await;
     assert!(r.body.contains("All sections are in sync.") && !r.body.contains("Proposals awaiting review"));
 }
+
+fn test_oidc() -> solidate_app::Oidc {
+    use solidate_app::openidconnect::core::{
+        CoreJwsSigningAlgorithm, CoreProviderMetadata, CoreResponseType, CoreSubjectIdentifierType,
+    };
+    use solidate_app::openidconnect::{
+        AuthUrl, EmptyAdditionalProviderMetadata, IssuerUrl, JsonWebKeySetUrl, ResponseTypes, TokenUrl, reqwest,
+    };
+    let metadata = CoreProviderMetadata::new(
+        IssuerUrl::new("https://idp.example".into()).unwrap(),
+        AuthUrl::new("https://idp.example/authorize".into()).unwrap(),
+        JsonWebKeySetUrl::new("https://idp.example/jwks".into()).unwrap(),
+        vec![ResponseTypes::new(vec![CoreResponseType::Code])],
+        vec![CoreSubjectIdentifierType::Public],
+        vec![CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256],
+        EmptyAdditionalProviderMetadata {},
+    )
+    .set_token_endpoint(Some(TokenUrl::new("https://idp.example/token".into()).unwrap()));
+    solidate_app::Oidc::from_metadata(
+        solidate_app::OidcConfig {
+            issuer: "https://idp.example".into(),
+            client_id: "solidate".into(),
+            client_secret: None,
+            redirect_url: "https://docs.example/login/oidc/callback".into(),
+            scopes: vec!["email".into()],
+            label: "Example".into(),
+        },
+        reqwest::Client::new(),
+        metadata,
+    )
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn oidc_routes(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, mut c) = setup(pool, opts).await;
+
+    // Disabled: no button, no route.
+    assert!(!c.get("/login").await.body.contains("/login/oidc"));
+    assert_eq!(c.get("/login/oidc").await.status, StatusCode::NOT_FOUND);
+
+    c.router = router(
+        app.with_oidc(test_oidc()),
+        WebConfig {
+            insecure_cookies: true,
+            public_url: None,
+        },
+    );
+    let r = c.get("/login?next=%2Ft%2Facme").await;
+    assert!(r.body.contains(r#"href="/login/oidc?next=%2Ft%2Facme""#));
+    assert!(r.body.contains("Sign in with Example"));
+
+    // Callback without a started attempt.
+    let r = c.get("/login/oidc/callback?code=x&state=y").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert!(r.body.contains("Sign-in with Example failed."));
+
+    let r = c.get("/login/oidc?next=%2Ft%2Facme").await;
+    assert_eq!(r.status, StatusCode::SEE_OTHER);
+    let location = r.location.unwrap();
+    assert!(location.starts_with("https://idp.example/authorize?"));
+    assert!(location.contains("code_challenge_method=S256"));
+    assert!(c.cookie.as_deref().unwrap().starts_with("solidate_oidc="));
+
+    // State from the provider does not match the attempt's cookie.
+    let r = c.get("/login/oidc/callback?code=x&state=forged").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert!(r.body.contains("Sign-in with Example failed."));
+    assert!(r.body.contains(r#"href="/login/oidc?next=%2Ft%2Facme""#));
+
+    // Provider error response.
+    c.get("/login/oidc").await;
+    let r = c.get("/login/oidc/callback?error=access_denied&state=x").await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+}

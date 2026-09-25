@@ -6,6 +6,7 @@ mod auth;
 mod ctx;
 mod docs;
 mod error;
+mod oidc;
 mod projects;
 mod proposals;
 mod ratelimit;
@@ -17,10 +18,12 @@ pub use auth::{Credential, NewApiToken, TOKEN_PREFIX};
 pub use ctx::{Access, Ctx, Grant, Level, Principal};
 pub use docs::{DocView, ExpandedDoc, PutDoc, PutResult, RenderedDoc, Tree, TreeEntry};
 pub use error::{AppError, Result};
+pub use oidc::{CALLBACK_PATH, Oidc, OidcConfig, OidcIdentity, OidcStart, PendingLogin};
 pub use proposals::{DEFAULT_GUIDE, GUIDE_PATH, ProposalRef, ProposalView, Propose, TranslationGuide};
 pub use ratelimit::RateLimit;
 pub use sync::{DocSync, QueueEntry, SectionText, SyncItem};
 
+pub use openidconnect;
 pub use solidate_core as core;
 pub use solidate_db as db;
 
@@ -76,12 +79,24 @@ pub struct App {
     db: Db,
     config: Config,
     limiter: Arc<RateLimiter>,
+    oidc: Option<Arc<Oidc>>,
 }
 
 impl App {
     pub fn new(db: Db, config: Config) -> Self {
         let limiter = Arc::new(RateLimiter::new(config.rate_limit));
-        Self { db, config, limiter }
+        Self {
+            db,
+            config,
+            limiter,
+            oidc: None,
+        }
+    }
+
+    /// Enables OpenID Connect sign-in through `oidc`.
+    pub fn with_oidc(mut self, oidc: Oidc) -> Self {
+        self.oidc = Some(Arc::new(oidc));
+        self
     }
 
     pub fn db(&self) -> &Db {

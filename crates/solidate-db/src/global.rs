@@ -1,4 +1,5 @@
-//! Data not scoped to a tenant: tenants, users, sessions, token lookup.
+//! Data not scoped to a tenant: tenants, users, external identities, sessions,
+//! token lookup.
 
 use solidate_core::Slug;
 use time::OffsetDateTime;
@@ -72,6 +73,53 @@ impl Db {
         .bind(email.trim())
         .fetch_optional(&self.pool)
         .await?)
+    }
+
+    /// The user linked to the external identity `(issuer, subject)`.
+    pub async fn identity_user(&self, issuer: &str, subject: &str) -> Result<Option<User>> {
+        Ok(sqlx::query_as(
+            "SELECT u.id, u.email, u.name, u.created_at, u.disabled_at FROM user_identities i
+             JOIN users u ON u.id = i.user_id
+             WHERE i.issuer = $1 AND i.subject = $2",
+        )
+        .bind(issuer)
+        .bind(subject)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// Links the external identity `(issuer, subject)` to `user`. `AlreadyExists`
+    /// if the identity is linked to any user.
+    pub async fn link_identity(&self, issuer: &str, subject: &str, user: UserId) -> Result<()> {
+        sqlx::query("INSERT INTO user_identities (issuer, subject, user_id) VALUES ($1, $2, $3)")
+            .bind(issuer)
+            .bind(subject)
+            .bind(user)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Creates a user without a password, linked to the external identity
+    /// `(issuer, subject)`.
+    pub async fn create_identity_user(&self, email: &str, name: &str, issuer: &str, subject: &str) -> Result<User> {
+        let mut tx = self.pool.begin().await?;
+        let user: User = sqlx::query_as(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) RETURNING id, email, name, created_at, disabled_at",
+        )
+        .bind(UserId::new())
+        .bind(email.trim())
+        .bind(name)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query("INSERT INTO user_identities (issuer, subject, user_id) VALUES ($1, $2, $3)")
+            .bind(issuer)
+            .bind(subject)
+            .bind(user.id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(user)
     }
 
     pub async fn user(&self, id: UserId) -> Result<Option<User>> {

@@ -19,6 +19,17 @@ Covers isolation, authentication, authorization, limits, audit.
 - `users.disabled_at` set -> login rejected; sessions invalid.
 - session lifetime: 14 days; stored as `token_hash`; cookie `Secure` unless `SOLIDATE_INSECURE_COOKIES=1`.
 
+## Single sign-on {#sso}
+
+- OIDC authorization code + PKCE (S256); one provider per instance; off unless `SOLIDATE_OIDC_ISSUER` set.
+- routes: `GET /login/oidc?next=` -> 303 to provider; `GET /login/oidc/callback`.
+- attempt cookie `solidate_oidc`: `state.nonce.verifier.next`; `HttpOnly`, `SameSite=Lax`, `Path=/login/oidc`, 10 min; removed on callback.
+- checks: state (constant-time) vs cookie; ID token signature, `iss`, `aud`, `exp`, `nonce`; `at_hash` if present.
+- signature failure -> refetch discovery + JWKS once, re-verify (key rotation).
+- user mapping: `user_identities (issuer, subject)` hit -> that user; else require `email_verified = true` -> link to user with that email (case-insensitive) or create passwordless user; else reject.
+- new users: no memberships. disabled -> rejected.
+- failures -> 401 sign-in page; details logged at target `solidate::auth`.
+
 ## API tokens {#tokens}
 
 - format: `sol_<12 hex>_<64 hex>`; prefix `sol_<12 hex>` stored (unique); secret 256-bit.

@@ -25,11 +25,28 @@ needs.
 
 ## People and sessions {#sessions}
 
-Users sign in with email and password. Passwords are hashed with Argon2id, and a
-sign-in attempt for an unknown email still verifies a dummy hash so that response
-times do not reveal which accounts exist. Disabled users cannot sign in, and
-their sessions stop working. Sessions last fourteen days and are stored only as
-hashes.
+Users sign in with email and password, or through an OpenID Connect provider
+when one is configured. Passwords are hashed with Argon2id, and a sign-in attempt
+for an unknown email still verifies a dummy hash so that response times do not
+reveal which accounts exist. Disabled users cannot sign in, and their sessions
+stop working. Sessions last fourteen days and are stored only as hashes.
+
+## Single sign-on {#sso}
+
+OpenID Connect sign-in uses the authorization code flow with PKCE. The state,
+nonce and PKCE verifier of an attempt are kept in a ten-minute `HttpOnly` cookie
+scoped to `/login/oidc`; the callback is accepted only when its state matches
+that cookie. The ID token's signature, issuer, audience, expiry and nonce are
+verified, and its access token hash when present. When a token is signed with an
+unknown key, the provider's keys are fetched again once, which handles key
+rotation.
+
+The provider's issuer and subject identify the person. The first sign-in with a
+new identity requires an email address the provider marks as verified: the
+identity is linked to the user with that address, or a user without a password
+is created. Later sign-ins use the link and ignore the email. New users belong to
+no tenant until an administrator adds them. Linking by email trusts the provider
+to verify addresses, so configure only a provider that does.
 
 ## API tokens {#tokens}
 

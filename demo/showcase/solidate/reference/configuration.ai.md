@@ -11,6 +11,12 @@ Source: environment variables; `.env` in working directory loaded if present (se
 | `PORT` | `solidate-server` | `3000` | bind port |
 | `SOLIDATE_PUBLIC_URL` | `solidate-server` | unset (relative links) | `llms.txt` base; MCP allowed host |
 | `SOLIDATE_INSECURE_COOKIES` | `solidate-server` | unset | `1` -> non-`Secure` session cookie |
+| `SOLIDATE_OIDC_ISSUER` | `solidate-server` | unset (SSO off) | OIDC issuer; discovery at startup, failure aborts start |
+| `SOLIDATE_OIDC_CLIENT_ID` | `solidate-server` | required if issuer set | client ID |
+| `SOLIDATE_OIDC_CLIENT_SECRET` | `solidate-server` | unset (public client) | `client_secret_basic` |
+| `SOLIDATE_OIDC_REDIRECT_URL` | `solidate-server` | `SOLIDATE_PUBLIC_URL` + `/login/oidc/callback` | registered redirect URI; one of the two required |
+| `SOLIDATE_OIDC_SCOPES` | `solidate-server` | `email profile` | space-separated; `openid` always added |
+| `SOLIDATE_OIDC_LABEL` | `solidate-server` | `SSO` | sign-in button text |
 | `SOLIDATE_RATE_LIMIT_PER_MIN` | server, `solidate-mcp` | `600` | per-token sustained rate; `0` disables |
 | `SOLIDATE_RATE_LIMIT_BURST` | server, `solidate-mcp` | `60` | bucket size |
 | `RUST_LOG` | all | server `info`; CLI, MCP `warn` | tracing filter |

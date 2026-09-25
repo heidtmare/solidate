@@ -6,11 +6,13 @@ append-only history of revisions with a pointer to the current one.
 
 ## Global tables {#global}
 
-`tenants`, `users`, `password_credentials` and `sessions` exist before any tenant
-is known, for example while someone signs in. Users are global so that one person
-can belong to several tenants. Email addresses are unique regardless of case.
+`tenants`, `users`, `password_credentials`, `user_identities` and `sessions`
+exist before any tenant is known, for example while someone signs in. Users are
+global so that one person can belong to several tenants. Email addresses are unique regardless of case.
 Passwords live in `password_credentials`, separate from users, so a user can exist
-without one. Session tokens and passwords are stored only as hashes.
+without one. `user_identities` links a user to external sign-in identities, each
+an OpenID Connect issuer and subject. Session tokens and passwords are stored only
+as hashes.
 
 ## Projects and documents {#documents}
 

@@ -9,6 +9,7 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 | `tenants` | `id`, `slug` UNIQUE, `name` | RLS: `id = current_tenant()` for `solidate_app` |
 | `users` | `id`, `email`, `name`, `disabled_at` | unique `lower(email)`; global (multi-tenant membership) |
 | `password_credentials` | `user_id` PK, `hash` (argon2id), `updated_at` | optional per user; no row = no password sign-in |
+| `user_identities` | (`issuer`, `subject`) PK, `user_id` | external (OIDC) identities; many per user |
 | `sessions` | `token_hash` PK, `user_id`, `expires_at` | token stored hashed |
 
 ## Projects and documents {#documents}

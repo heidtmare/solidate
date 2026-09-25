@@ -236,10 +236,10 @@ async fn sync_bases_round_trip(pool: PgPoolOptions, opts: PgConnectOptions) {
 async fn users_sessions_memberships_tokens(pool: PgPoolOptions, opts: PgConnectOptions) {
     let db = db(pool, opts).await;
     let t = db.create_tenant(&slug("acme"), "Acme").await.unwrap();
-    let u = db.create_user("Ada@Example.com", "Ada", "hash").await.unwrap();
+    let u = db.create_user("Ada@Example.com", "Ada", Some("hash")).await.unwrap();
     assert_eq!(db.user_by_email("ada@example.com").await.unwrap().unwrap().id, u.id);
     assert!(matches!(
-        db.create_user("ADA@example.com", "x", "y").await,
+        db.create_user("ADA@example.com", "x", Some("y")).await,
         Err(DbError::AlreadyExists(_))
     ));
 

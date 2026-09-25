@@ -3,7 +3,7 @@
 use serde::Serialize;
 use solidate_app::core::{Hash, Variant};
 use solidate_app::db::Project;
-use solidate_app::{Actor, App, Ctx, Tree};
+use solidate_app::{App, Ctx, Level, Tree};
 use topcoat::Result;
 use topcoat::context::{Cx, app_context};
 use topcoat::router::response::Response;
@@ -44,23 +44,21 @@ async fn whoami_inner(cx: &Cx) -> ApiResult {
         tenant: &'a str,
         tenant_name: &'a str,
         scopes: Vec<&'static str>,
-        /// Project a restricted token is bound to.
+        /// Project a restricted credential is bound to.
         project: Option<String>,
     }
-    let (scopes, project) = match &ctx.actor {
-        Actor::Token { scopes, project, .. } => {
-            let project = match project {
-                Some(id) => app(cx)
-                    .projects(&ctx)
-                    .await?
-                    .into_iter()
-                    .find(|p| p.id == *id)
-                    .map(|p| p.slug),
-                None => None,
-            };
-            (scopes.iter().map(|s| s.as_str()).collect(), project)
-        }
-        _ => (Vec::new(), None),
+    let scopes = match &ctx.grant.level {
+        Level::Scopes(scopes) => scopes.iter().map(|s| s.as_str()).collect(),
+        _ => Vec::new(),
+    };
+    let project = match ctx.grant.project {
+        Some(id) => app(cx)
+            .projects(&ctx)
+            .await?
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(|p| p.slug),
+        None => None,
     };
     Ok(json(
         StatusCode::OK,

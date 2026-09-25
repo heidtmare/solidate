@@ -505,6 +505,20 @@ async fn users_tokens_and_authorization(pool: PgPoolOptions, opts: PgConnectOpti
         user.id
     );
 
+    // Users without a password cannot sign in with one until it is set.
+    let sso = app.db().create_user("sso@acme.dev", "SSO", None).await.unwrap();
+    assert!(matches!(
+        app.login("sso@acme.dev", "long-enough-pw").await,
+        Err(AppError::Unauthorized)
+    ));
+    app.set_password(sso.id, "long-enough-pw").await.unwrap();
+    assert_eq!(app.login("sso@acme.dev", "long-enough-pw").await.unwrap().id, sso.id);
+    app.set_password(sso.id, "another-long-pw").await.unwrap();
+    assert!(matches!(
+        app.login("sso@acme.dev", "long-enough-pw").await,
+        Err(AppError::Unauthorized)
+    ));
+
     assert!(matches!(app.user_ctx("acme", user.id).await, Err(AppError::Forbidden)));
     app.set_member(&admin, user.id, Role::Reader).await.unwrap();
     let reader = app.user_ctx("acme", user.id).await.unwrap();

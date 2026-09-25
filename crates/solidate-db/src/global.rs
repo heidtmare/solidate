@@ -31,38 +31,68 @@ impl Db {
             .await?)
     }
 
-    pub async fn create_user(&self, email: &str, name: &str, password_hash: &str) -> Result<User> {
+    /// Creates a user, with a password when `password_hash` is set.
+    pub async fn create_user(&self, email: &str, name: &str, password_hash: Option<&str>) -> Result<User> {
+        let mut tx = self.pool.begin().await?;
+        let user: User = sqlx::query_as(
+            "INSERT INTO users (id, email, name) VALUES ($1, $2, $3) RETURNING id, email, name, created_at, disabled_at",
+        )
+        .bind(UserId::new())
+        .bind(email.trim())
+        .bind(name)
+        .fetch_one(&mut *tx)
+        .await?;
+        if let Some(hash) = password_hash {
+            sqlx::query("INSERT INTO password_credentials (user_id, hash) VALUES ($1, $2)")
+                .bind(user.id)
+                .bind(hash)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(user)
+    }
+
+    pub async fn user_by_email(&self, email: &str) -> Result<Option<User>> {
         Ok(
-            sqlx::query_as("INSERT INTO users (id, email, name, password_hash) VALUES ($1, $2, $3, $4) RETURNING *")
-                .bind(UserId::new())
+            sqlx::query_as("SELECT id, email, name, created_at, disabled_at FROM users WHERE lower(email) = lower($1)")
                 .bind(email.trim())
-                .bind(name)
-                .bind(password_hash)
-                .fetch_one(&self.pool)
+                .fetch_optional(&self.pool)
                 .await?,
         )
     }
 
-    pub async fn user_by_email(&self, email: &str) -> Result<Option<User>> {
-        Ok(sqlx::query_as("SELECT * FROM users WHERE lower(email) = lower($1)")
-            .bind(email.trim())
-            .fetch_optional(&self.pool)
-            .await?)
+    /// The user with `email` and their password hash, if any.
+    pub async fn password_login(&self, email: &str) -> Result<Option<PasswordLogin>> {
+        Ok(sqlx::query_as(
+            "SELECT u.id, u.email, u.name, u.created_at, u.disabled_at, p.hash FROM users u
+             LEFT JOIN password_credentials p ON p.user_id = u.id
+             WHERE lower(u.email) = lower($1)",
+        )
+        .bind(email.trim())
+        .fetch_optional(&self.pool)
+        .await?)
     }
 
     pub async fn user(&self, id: UserId) -> Result<Option<User>> {
-        Ok(sqlx::query_as("SELECT * FROM users WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?)
+        Ok(
+            sqlx::query_as("SELECT id, email, name, created_at, disabled_at FROM users WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
     }
 
+    /// Sets or replaces the user's password.
     pub async fn set_password_hash(&self, id: UserId, password_hash: &str) -> Result<()> {
-        sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
-            .bind(id)
-            .bind(password_hash)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO password_credentials (user_id, hash) VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET hash = excluded.hash, updated_at = now()",
+        )
+        .bind(id)
+        .bind(password_hash)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -79,7 +109,7 @@ impl Db {
     /// The session's user, if the session exists, is unexpired and the user is enabled.
     pub async fn session(&self, token_hash: &[u8]) -> Result<Option<SessionRecord>> {
         Ok(sqlx::query_as(
-            "SELECT u.*, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id
+            "SELECT u.id, u.email, u.name, u.created_at, u.disabled_at, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE s.token_hash = $1 AND s.expires_at > now() AND u.disabled_at IS NULL",
         )
         .bind(token_hash)

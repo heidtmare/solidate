@@ -100,6 +100,10 @@ async fn auth_and_projects(pool: PgPoolOptions, opts: PgConnectOptions) {
     )
     .await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    // Scheme names are case-insensitive.
+    let lower = rw.replacen("Bearer", "bearer", 1);
+    let r = call(&router, "GET", "/api/v1/projects", &[("authorization", &lower)], None).await;
+    assert_eq!(r.status, StatusCode::OK);
 
     let api = Api {
         router: router.clone(),

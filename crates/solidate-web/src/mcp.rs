@@ -1,4 +1,4 @@
-//! Streamable HTTP MCP endpoint at `/mcp`, authenticated with bearer API tokens.
+//! Streamable HTTP MCP endpoint at `/mcp`, authenticated like the REST API.
 
 use std::convert::Infallible;
 
@@ -7,6 +7,8 @@ use topcoat::router::request::Request;
 use topcoat::router::response::Response;
 use topcoat::router::tower::TowerRoute;
 use topcoat::router::{Body, HeaderValue, StatusCode, header};
+
+use crate::auth::{challenge, credential};
 
 fn error_response(status: StatusCode, body: &'static str) -> Response {
     let mut res = Response::new(Body::from(body));
@@ -21,8 +23,7 @@ fn unauthorized() -> Response {
         StatusCode::UNAUTHORIZED,
         r#"{"error":{"code":"unauthorized","message":"a valid API token is required"}}"#,
     );
-    res.headers_mut()
-        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    res.headers_mut().insert(header::WWW_AUTHENTICATE, challenge());
     res
 }
 
@@ -61,14 +62,8 @@ pub fn route(
     let svc = tower::service_fn(move |mut req: Request| {
         let (app, mut mcp) = (app.clone(), mcp.clone());
         async move {
-            let token = req
-                .headers()
-                .get(header::AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(str::to_owned);
-            let ctx = match token {
-                Some(t) => app.token_ctx(&t).await,
+            let ctx = match credential(req.headers().get(header::AUTHORIZATION)) {
+                Some(c) => app.authenticate(c).await,
                 None => Err(AppError::Unauthorized),
             };
             let ctx = match ctx {

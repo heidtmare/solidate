@@ -3,7 +3,7 @@
 
 use rmcp::ServiceExt;
 use solidate_app::db::Db;
-use solidate_app::{App, Config, telemetry};
+use solidate_app::{App, Config, Credential, telemetry};
 use solidate_mcp::SolidateMcp;
 
 #[tokio::main]
@@ -14,10 +14,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = std::env::var("SOLIDATE_TOKEN").map_err(|_| "SOLIDATE_TOKEN must be set")?;
     let app = App::new(Db::connect(&url).await?, Config::from_env()?);
     // Fail fast on a bad token instead of on the first tool call.
-    app.token_ctx(&token)
+    app.authenticate(Credential::Bearer(&token))
         .await
         .map_err(|e| format!("SOLIDATE_TOKEN: {e}"))?;
-    let server = SolidateMcp::with_token(app, token)
+    let server = SolidateMcp::with_bearer(app, token)
         .serve(rmcp::transport::stdio())
         .await?;
     server.waiting().await?;

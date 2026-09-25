@@ -5,7 +5,7 @@ use serde_json::Value;
 use solidate_db::{AuditEntry, AuditId, NewAudit, ProjectId, TenantTx};
 
 use crate::App;
-use crate::ctx::{Access, Actor, Ctx};
+use crate::ctx::{Access, Ctx};
 use crate::error::Result;
 
 pub(crate) async fn record(
@@ -16,15 +16,10 @@ pub(crate) async fn record(
     target: Option<&str>,
     detail: Value,
 ) -> Result<()> {
-    let actor = match &ctx.actor {
-        Actor::User { id, .. } => id.to_string(),
-        Actor::Token { id, .. } => id.to_string(),
-        Actor::System => "system".to_owned(),
-    };
     tracing::info!(
         target: "solidate::audit",
         tenant = %ctx.tenant.slug,
-        %actor,
+        actor = %ctx.principal,
         action,
         target = target.unwrap_or_default(),
         "audit"

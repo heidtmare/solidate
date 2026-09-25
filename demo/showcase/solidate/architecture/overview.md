@@ -56,9 +56,9 @@ tokens, import, export and audit.
 
 A request enters a front end, which authenticates it: a session cookie for the
 browser, a bearer token for the API and MCP. The front end resolves the tenant
-and builds a `Ctx` holding the tenant and the actor. It then calls a method on
-`App`, which opens a tenant transaction, checks the actor's access against the
-project, performs the work, writes an audit entry when something changed, and
+and builds a `Ctx` holding the tenant, the principal (who is acting) and the
+grant (what it may do). It then calls a method on `App`, which opens a tenant
+transaction, checks the grant against the project, performs the work, writes an audit entry when something changed, and
 commits. The front end turns the result into HTML, JSON or an MCP tool result.
 
 The write path in detail is in [[architecture/write-path]]; isolation and

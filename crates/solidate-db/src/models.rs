@@ -27,9 +27,17 @@ pub struct User {
     pub id: UserId,
     pub email: String,
     pub name: String,
-    pub password_hash: String,
     pub created_at: OffsetDateTime,
     pub disabled_at: Option<OffsetDateTime>,
+}
+
+/// A user and their password hash, for password sign-in. `hash` is `None` when
+/// the user has no password.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct PasswordLogin {
+    #[sqlx(flatten)]
+    pub user: User,
+    pub hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]

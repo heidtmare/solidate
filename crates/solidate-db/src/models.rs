@@ -104,6 +104,25 @@ pub struct Revision {
     pub created_at: OffsetDateTime,
 }
 
+/// A proposed replacement of one document variant (see [`crate::NewProposal`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
+pub struct Proposal {
+    pub id: ProposalId,
+    pub document_id: DocumentId,
+    pub path: String,
+    /// The variant the proposal replaces.
+    pub variant: Variant,
+    pub base_hash: Option<Hash>,
+    pub source_hash: Option<Hash>,
+    pub content: String,
+    pub resolves: Vec<String>,
+    pub message: Option<String>,
+    pub author_user_id: Option<UserId>,
+    pub author_token_id: Option<TokenId>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct SectionRow {
     pub ordinal: i32,

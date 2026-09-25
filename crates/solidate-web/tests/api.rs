@@ -364,6 +364,57 @@ async fn sync_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
         )
         .await;
     assert_eq!(r.json()["sections"][0]["state"], "in_sync");
+
+    // Translation proposals.
+    let g = api
+        .req("GET", "/api/v1/projects/app/translation-guide", &[], None)
+        .await
+        .json();
+    assert!(g["source"].is_null() && g["content"].as_str().unwrap().contains("AI variant"));
+    let s = api.req("GET", "/api/v1/projects/app/sync/auth", &[], None).await.json();
+    let ai_hash = s["ai_hash"].as_str().unwrap().to_owned();
+    let human_hash = s["human_hash"].as_str().unwrap().to_owned();
+    put(
+        "human",
+        format!("\"{human_hash}\""),
+        "# Auth\n\nOpaque tokens, rotated daily.\n",
+        "",
+    )
+    .await;
+    let body = serde_json::json!({
+        "variant": "ai", "content": "# Auth\n\n- tokens: opaque, rotated daily\n", "base_hash": ai_hash,
+    });
+    let r = api
+        .req(
+            "POST",
+            "/api/v1/projects/app/propose/auth",
+            &[("content-type", "application/json")],
+            Some(&body.to_string()),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let id = r.json()["id"].as_str().unwrap().to_owned();
+    let ps = api.req("GET", "/api/v1/projects/app/proposals", &[], None).await.json();
+    assert_eq!(
+        (ps[0]["id"].as_str(), ps[0]["resolves"][0].as_str()),
+        (Some(id.as_str()), Some("auth"))
+    );
+    let stale = serde_json::json!({ "variant": "ai", "content": "# Auth\n", "base_hash": "0".repeat(64) });
+    let r = api
+        .req(
+            "POST",
+            "/api/v1/projects/app/propose/auth",
+            &[("content-type", "application/json")],
+            Some(&stale.to_string()),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+    let r = api
+        .req("DELETE", &format!("/api/v1/projects/app/proposals/{id}"), &[], None)
+        .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let ps = api.req("GET", "/api/v1/projects/app/proposals", &[], None).await.json();
+    assert_eq!(ps, serde_json::json!([]));
 }
 
 async fn mcp(r: &Router, auth: &str, body: &str) -> Reply {
@@ -422,6 +473,9 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
         "get_sync_queue",
         "get_sync_item",
         "resolve_sync",
+        "get_translation_guide",
+        "propose_translation",
+        "list_proposals",
         "search",
     ] {
         assert!(names.contains(&n), "missing tool {n}");
@@ -495,6 +549,51 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
     assert!(!err, "{out}");
     let (_, out) = tool(&router, &rw, "get_sync_queue", serde_json::json!({"project": "app"})).await;
     assert_eq!(out, "[]");
+
+    // Translate someone else's change as a proposal.
+    let (_, out) = tool(
+        &router,
+        &rw,
+        "read_doc",
+        serde_json::json!({"project": "app", "path": "notes", "variant": "ai"}),
+    )
+    .await;
+    let ai: Value = serde_json::from_str(&out).unwrap();
+    let (_, out) = tool(
+        &router,
+        &rw,
+        "write_doc",
+        serde_json::json!({"project": "app", "path": "notes", "content": "# Notes\n\nHello, world.\n", "base_hash": doc["content_hash"]}),
+    )
+    .await;
+    assert!(out.contains("\"stale_side\":\"ai\""), "{out}");
+    let (_, out) = tool(
+        &router,
+        &rw,
+        "get_translation_guide",
+        serde_json::json!({"project": "app"}),
+    )
+    .await;
+    assert!(out.contains("Translation guide"), "{out}");
+    let (err, out) = tool(
+        &router,
+        &rw,
+        "propose_translation",
+        serde_json::json!({"project": "app", "path": "notes", "variant": "ai", "content": "# Notes\n\n- greeting: hello, world\n", "base_hash": ai["content_hash"]}),
+    )
+    .await;
+    assert!(!err, "{out}");
+    let proposed: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(proposed["resolves"], serde_json::json!(["notes"]));
+    let (_, out) = tool(&router, &rw, "get_sync_queue", serde_json::json!({"project": "app"})).await;
+    let q: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(q[0]["proposal"]["id"], proposed["proposal"]);
+    let (_, out) = tool(&router, &rw, "list_proposals", serde_json::json!({"project": "app"})).await;
+    let ps: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        (ps[0]["path"].as_str(), ps[0]["outdated"].as_bool()),
+        (Some("notes"), Some(false))
+    );
 
     // Restricted read-only token.
     let (err, out) = tool(

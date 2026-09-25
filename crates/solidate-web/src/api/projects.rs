@@ -229,8 +229,10 @@ pub(crate) async fn llms_txt(app: &App, ctx: &Ctx, project: &str, public_url: &s
     let tree = app.tree(ctx, project).await?;
     let p = &tree.project;
     let mut out = format!(
-        "# {}\n\n> Design documents of project `{}`. Links return raw Markdown; the AI variant is listed where one exists. API requests need `Authorization: Bearer <token>`.\n\n## Documents\n\n",
-        p.name, p.slug
+        "# {}\n\n> Documentation of project `{}`. Each document is one ground truth written twice: a human variant (narrative) and an AI variant (dense, structured) that translate each other section by section. Links return raw Markdown; the AI variant is listed where one exists. API requests need `Authorization: Bearer <token>`.\n\n\
+         When you change what a document says, update both variants: write the edited one, then its translation, listing the translated section anchors in `resolves`. \
+         To translate changes made by others, read the translation guide ({public_url}/api/v1/projects/{}/translation-guide), take sections from the sync queue ({public_url}/api/v1/projects/{}/sync) that have no current proposal, and submit translations for review (`POST {public_url}/api/v1/projects/{}/propose/<path>`).\n\n## Documents\n\n",
+        p.name, p.slug, p.slug, p.slug, p.slug
     );
     for e in &tree.entries {
         let variant = if e.ai.is_some() { Variant::Ai } else { Variant::Human };

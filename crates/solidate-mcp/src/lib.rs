@@ -15,16 +15,22 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData as McpError, ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use solidate_app::core::{DocPath, Variant, analyze};
+use solidate_app::core::{DocPath, Hash, Variant, analyze};
 use solidate_app::db::Expect;
-use solidate_app::{App, AppError, Ctx, PutDoc};
+use solidate_app::{App, AppError, Ctx, Propose, PutDoc};
 use time::format_description::well_known::Rfc3339;
 
-const INSTRUCTIONS: &str = "Solidate stores project design documents. Each document has a human variant (narrative) \
-and an AI variant (dense, structured), paired by section anchors. Read with read_doc; write with write_doc, passing \
-the content_hash from your last read as base_hash (optimistic concurrency). When one variant changes, its sections \
-appear in get_sync_queue; propagate the change to the other variant with write_doc and list the section anchors in \
-`resolves`. Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.";
+const INSTRUCTIONS: &str = "Solidate stores project documentation as one ground truth written twice: every document \
+has a human variant (narrative) and an AI variant (dense, structured). The variants are translations of each other, \
+paired by section anchors; they must state the same facts. Read with read_doc; write with write_doc, passing the \
+content_hash from your last read as base_hash (optimistic concurrency).\n\n\
+When you change what a document says, change both variants: write the one you edited, then its translation with \
+write_doc, listing the translated section anchors in `resolves`.\n\n\
+To translate changes made by others: call get_translation_guide once per project, take sections from \
+get_sync_queue that have no current proposal, read each with get_sync_item, and submit the full translated \
+variant with propose_translation. A person reviews and accepts proposals. Use resolve_sync only when an edit \
+does not change meaning (typos, formatting) so no translation is needed.\n\n\
+Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.";
 
 type ToolResult = Result<CallToolResult, McpError>;
 
@@ -75,6 +81,14 @@ macro_rules! try_app {
 
 fn parse_path(path: &str) -> Result<DocPath, AppError> {
     DocPath::parse(path).map_err(|e| AppError::Invalid(e.to_string()))
+}
+
+fn parse_hash(h: Option<&str>) -> Result<Option<Hash>, AppError> {
+    h.map(|h| {
+        h.parse()
+            .map_err(|_| AppError::Invalid("base_hash must be a 64-character hex hash".into()))
+    })
+    .transpose()
 }
 
 fn parse_variant(v: Option<&str>) -> Result<Variant, AppError> {
@@ -158,6 +172,24 @@ pub struct ResolveArgs {
     /// Instead of `anchors`: every pending section present in both variants.
     #[serde(default)]
     pub paired: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ProposeArgs {
+    pub project: String,
+    pub path: String,
+    /// The variant being translated into: `human` or `ai`.
+    pub variant: String,
+    /// Full Markdown content of that variant with the translation applied.
+    pub content: String,
+    /// `content_hash` of that variant as last read (`human_head`/`ai_head` from
+    /// get_sync_item). Omit only when the variant does not exist yet.
+    pub base_hash: Option<String>,
+    /// Note for the reviewer: what changed, and anything ambiguous in the source.
+    pub message: Option<String>,
+    /// Section anchors the translation covers. Omit for every section needing attention.
+    #[serde(default)]
+    pub resolves: Vec<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -306,19 +338,13 @@ impl SolidateMcp {
     }
 
     #[tool(
-        description = "Write the full content of one document variant. Requires base_hash (the content_hash last read) unless creating the variant. Writing an inherited path creates an override in this project. List propagated section anchors in `resolves` to mark them in sync."
+        description = "Write the full content of one document variant. Requires base_hash (the content_hash last read) unless creating the variant. Writing an inherited path creates an override in this project. When writing the translation of your own change, list the translated section anchors in `resolves` to mark them in sync. Creating a variant whose counterpart exists marks the sections present in both as in sync."
     )]
     async fn write_doc(&self, Parameters(a): Parameters<WriteDocArgs>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
         let path = try_app!(parse_path(&a.path));
         let variant = try_app!(parse_variant(a.variant.as_deref()));
-        let expect = match a.base_hash.as_deref() {
-            Some(h) => Expect::Head(try_app!(
-                h.parse()
-                    .map_err(|_| AppError::Invalid("base_hash must be a 64-character hex hash".into()))
-            )),
-            None => Expect::Absent,
-        };
+        let expect = try_app!(parse_hash(a.base_hash.as_deref())).map_or(Expect::Absent, Expect::Head);
         let r = try_app!(
             self.app
                 .put_doc(
@@ -351,7 +377,7 @@ impl SolidateMcp {
     }
 
     #[tool(
-        description = "Sections whose human and AI variants diverged since the last sync, across a project's own documents. stale_side is the variant that needs updating; null means conflict."
+        description = "Sections awaiting translation across a project's own documents: one variant changed since the last sync. stale_side is the variant to translate into; null means both changed (conflict: reconcile both into one truth). `proposal` is set when a translation proposal already covers the section; skip those unless outdated."
     )]
     async fn get_sync_queue(&self, Parameters(a): Parameters<ProjectArg>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
@@ -359,7 +385,7 @@ impl SolidateMcp {
     }
 
     #[tool(
-        description = "Everything needed to propagate one section: both variants' current text, text at the last sync, diffs since then, and each variant's content_hash for base_hash."
+        description = "Everything needed to translate one section: both variants' current text, text at the last sync, diffs since then, and each variant's content_hash (human_head/ai_head) for base_hash."
     )]
     async fn get_sync_item(&self, Parameters(a): Parameters<SyncItemArgs>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
@@ -370,7 +396,7 @@ impl SolidateMcp {
     }
 
     #[tool(
-        description = "Mark sections as in sync without editing, when the variants already agree. Pass anchors, or paired=true for every pending section present in both variants."
+        description = "Mark sections as in sync without editing: the change needs no translation (typo, formatting) or the variants already agree. Pass anchors, or paired=true for every pending section present in both variants."
     )]
     async fn resolve_sync(&self, Parameters(a): Parameters<ResolveArgs>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
@@ -385,6 +411,67 @@ impl SolidateMcp {
             _ => return fail(AppError::Invalid("pass either anchors or paired=true".into())),
         }
         ok(json!(try_app!(self.app.doc_sync(&ctx, &a.project, &path).await)))
+    }
+
+    #[tool(
+        description = "How the human and AI variants of this project's documents differ, and the rules for translating between them. Read before translating."
+    )]
+    async fn get_translation_guide(&self, Parameters(a): Parameters<ProjectArg>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let g = try_app!(self.app.translation_guide(&ctx, &a.project).await);
+        ok(json!(g))
+    }
+
+    #[tool(
+        description = "Submit a translation for review: the full content of the stale variant with the other variant's changes carried over. Replaces any open proposal for that variant. A person accepts or rejects it; accepting writes it and marks `resolves` in sync."
+    )]
+    async fn propose_translation(&self, Parameters(a): Parameters<ProposeArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let path = try_app!(parse_path(&a.path));
+        let variant = try_app!(parse_variant(Some(&a.variant)));
+        let base = try_app!(parse_hash(a.base_hash.as_deref()));
+        let p = try_app!(
+            self.app
+                .propose(
+                    &ctx,
+                    Propose {
+                        project: &a.project,
+                        path: &path,
+                        variant,
+                        content: &a.content,
+                        base,
+                        message: a.message.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+                        resolves: &a.resolves,
+                    },
+                )
+                .await
+        );
+        ok(json!({
+            "proposal": p.proposal.id,
+            "path": p.proposal.path,
+            "variant": p.proposal.variant,
+            "resolves": p.proposal.resolves,
+        }))
+    }
+
+    #[tool(
+        description = "Open translation proposals on a project's own documents, with each one's resolves, diff against the current variant, and whether it is outdated."
+    )]
+    async fn list_proposals(&self, Parameters(a): Parameters<ProjectArg>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let ps = try_app!(self.app.project_proposals(&ctx, &a.project).await);
+        let out: Vec<Value> = ps
+            .iter()
+            .map(|p| {
+                json!({
+                    "proposal": p.proposal.id, "path": p.proposal.path, "variant": p.proposal.variant,
+                    "resolves": p.proposal.resolves, "message": p.proposal.message,
+                    "outdated": p.outdated, "diff": p.diff,
+                    "created_at": p.proposal.created_at.format(&Rfc3339).ok(),
+                })
+            })
+            .collect();
+        ok(json!(out))
     }
 
     #[tool(description = "Documents linking to a document.")]

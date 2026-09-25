@@ -100,7 +100,7 @@ label input { margin-top: 0.25rem; color: var(--fg); }
 .count.warn { background: var(--warn-bg); color: var(--warn); }
 
 .list { list-style: none; padding: 0; }
-.list li { padding: 0.5rem 0; border-bottom: 1px solid var(--line); }
+.list li { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; padding: 0.5rem 0; border-bottom: 1px solid var(--line); }
 .plain { list-style: none; padding: 0; margin: 0; }
 .plain li { padding: 0.15rem 0; }
 .missing { color: var(--del-fg); }
@@ -164,5 +164,7 @@ pre.diff .hunk { color: var(--muted); }
 .snippet mark { background: var(--warn-bg); color: var(--fg); }
 .error { text-align: center; margin-top: 3rem; }
 .bar { margin: 0.6rem 0; }
+.proposal { border: 1px solid var(--line); border-radius: var(--radius); padding: 0.4rem 0.9rem 0.8rem; margin: 1rem 0; }
+.proposal h2 { font-size: 1.05rem; margin: 0.4rem 0; }
 .dot { display: inline-block; width: 0.5em; height: 0.5em; border-radius: 50%; margin-left: 0.35rem; vertical-align: middle; background: var(--warn); }
 .dot.conflict { background: var(--del-fg); }

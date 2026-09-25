@@ -7,6 +7,7 @@ mod ctx;
 mod docs;
 mod error;
 mod projects;
+mod proposals;
 mod ratelimit;
 mod search;
 mod sync;
@@ -16,6 +17,7 @@ pub use auth::{NewApiToken, TOKEN_PREFIX};
 pub use ctx::{Access, Actor, Ctx};
 pub use docs::{DocView, ExpandedDoc, PutDoc, PutResult, RenderedDoc, Tree, TreeEntry};
 pub use error::{AppError, Result};
+pub use proposals::{DEFAULT_GUIDE, GUIDE_PATH, ProposalRef, ProposalView, Propose, TranslationGuide};
 pub use ratelimit::RateLimit;
 pub use sync::{DocSync, QueueEntry, SectionText, SyncItem};
 

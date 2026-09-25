@@ -108,7 +108,11 @@ pub struct RevisionDiff {
 }
 
 /// Finds `path` in the first project of `chain` that defines it.
-async fn resolve(tx: &mut TenantTx, chain: &[Project], path: &DocPath) -> Result<Option<(Project, Document)>> {
+pub(crate) async fn resolve(
+    tx: &mut TenantTx,
+    chain: &[Project],
+    path: &DocPath,
+) -> Result<Option<(Project, Document)>> {
     for p in chain {
         if let Some(d) = tx.document_by_path(p.id, path).await? {
             return Ok(Some((p.clone(), d)));
@@ -143,11 +147,19 @@ impl App {
     /// Writing to an inherited path creates an override in `project`. In that case an
     /// `Expect::Head` matching the inherited head is accepted.
     pub async fn put_doc(&self, ctx: &Ctx, req: PutDoc<'_>) -> Result<PutResult> {
+        let mut tx = self.tx(ctx).await?;
+        let r = self.put_doc_tx(&mut tx, ctx, req).await?;
+        tx.commit().await?;
+        Ok(r)
+    }
+
+    /// [`Self::put_doc`] within `tx`, without committing.
+    pub(crate) async fn put_doc_tx(&self, tx: &mut TenantTx, ctx: &Ctx, req: PutDoc<'_>) -> Result<PutResult> {
         if req.content.len() > self.config.max_doc_bytes {
             return Err(invalid(format!("document exceeds {} bytes", self.config.max_doc_bytes)));
         }
-        let mut tx = self.tx(ctx).await?;
-        let p = project_by_slug(&mut tx, req.project).await?;
+        let tx = &mut *tx;
+        let p = project_by_slug(tx, req.project).await?;
         ctx.require(Access::Write, Some(&p))?;
 
         let (document, expect) = match tx.document_by_path(p.id, req.path).await? {
@@ -155,7 +167,7 @@ impl App {
             None => {
                 if let Expect::Head(h) = req.expect {
                     let chain = tx.project_chain(p.id).await?;
-                    let inherited = match resolve(&mut tx, &chain, req.path).await? {
+                    let inherited = match resolve(tx, &chain, req.path).await? {
                         Some((_, d)) => tx.head(d.id, req.variant).await?.map(|h| h.content_hash),
                         None => None,
                     };
@@ -166,6 +178,11 @@ impl App {
                 (tx.create_document(p.id, req.path).await?, Expect::Absent)
             }
         };
+
+        // The first write of a variant whose counterpart exists is its translation:
+        // sections present in both are reconciled.
+        let first_translation = tx.head(document.id, req.variant).await?.is_none()
+            && tx.head(document.id, req.variant.other()).await?.is_some();
 
         let analysis = analyze(req.content, Some(req.path));
         let (revision, created) = tx
@@ -180,10 +197,21 @@ impl App {
             })
             .await?;
 
+        if created {
+            tx.delete_variant_proposal(document.id, req.variant).await?;
+        }
         let sync = if document.sync_enabled {
-            let mut plan = doc_plan(&mut tx, document.id).await?.plan;
-            if !req.resolves.is_empty() {
-                plan = reconcile_anchors(&mut tx, document.id, plan, req.resolves).await?;
+            let mut plan = doc_plan(tx, document.id).await?.plan;
+            let mut resolves = req.resolves.to_vec();
+            if first_translation {
+                let paired = plan
+                    .iter()
+                    .filter(|s| s.state.needs_attention() && s.human.is_some() && s.ai.is_some())
+                    .map(|s| s.anchor.clone());
+                resolves.extend(paired.filter(|a| !req.resolves.contains(a)).collect::<Vec<_>>());
+            }
+            if !resolves.is_empty() {
+                plan = reconcile_anchors(tx, document.id, plan, &resolves).await?;
             }
             let keep: Vec<String> = plan.iter().map(|s| s.anchor.clone()).collect();
             tx.prune_sync_bases(document.id, &keep).await?;
@@ -200,10 +228,9 @@ impl App {
                 "changed": created,
                 "resolves": req.resolves,
             });
-            record(&mut tx, ctx, "doc.write", Some(p.id), Some(req.path.as_str()), detail).await?;
+            record(tx, ctx, "doc.write", Some(p.id), Some(req.path.as_str()), detail).await?;
         }
         let document = tx.document(document.id).await?.ok_or(AppError::NotFound)?;
-        tx.commit().await?;
         Ok(PutResult {
             document,
             revision,

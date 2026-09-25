@@ -1,9 +1,9 @@
 //! In-process HTTP tests through `Router::handle`. Require `DATABASE_URL`.
 
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
-use solidate_app::core::{DocPath, Role, Slug, Variant};
+use solidate_app::core::{DocPath, Hash, Role, Slug, Variant};
 use solidate_app::db::{Db, Expect};
-use solidate_app::{App, Config, PutDoc};
+use solidate_app::{App, Config, Propose, PutDoc};
 use solidate_web::{WebConfig, router};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use topcoat::router::{Body, Router, StatusCode, header, to_bytes};
@@ -160,7 +160,7 @@ async fn login_view_edit_conflict_logout(pool: PgPoolOptions, opts: PgConnectOpt
     assert!(r.body.contains("changed by someone else") && r.body.contains("Mine."));
 
     let r = c.get("/t/acme/p/app/sync").await;
-    assert!(r.body.contains("human_ahead"));
+    assert!(r.body.contains("human changed"));
 
     let r = c.get("/t/acme/p/nope").await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
@@ -204,7 +204,10 @@ async fn propagate_section_through_editor(pool: PgPoolOptions, opts: PgConnectOp
 
     let r = c.get("/t/acme/p/app/edit/design/auth?v=ai&resolves=auth").await;
     assert_eq!(r.status, StatusCode::OK);
-    assert!(r.body.contains("Saving marks section #auth as in sync."));
+    assert!(
+        r.body
+            .contains("You are translating section #auth from the human variant.")
+    );
     assert!(r.body.contains(r#"name="resolves" value="auth""#));
 
     let r = c
@@ -228,4 +231,66 @@ async fn propagate_section_through_editor(pool: PgPoolOptions, opts: PgConnectOp
     // Unknown anchors are rejected.
     let r = c.get("/t/acme/p/app/edit/design/auth?v=ai&resolves=nope").await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn review_translation_proposal(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, mut c) = setup(pool, opts).await;
+    let sys = app.system_ctx("acme").await.unwrap();
+    let auth = DocPath::parse("design/auth").unwrap();
+    let propose = |content: &'static str| {
+        let (app, sys, auth) = (app.clone(), sys.clone(), auth.clone());
+        async move {
+            app.propose(
+                &sys,
+                Propose {
+                    project: "app",
+                    path: &auth,
+                    variant: Variant::Ai,
+                    content,
+                    base: None,
+                    message: Some("First translation."),
+                    resolves: &[],
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let rejected = propose("# Auth\n\n- tokens: ?\n").await;
+    c.post(
+        "/login",
+        &[("email", "ada@acme.dev"), ("password", "long-enough-pw"), ("next", "/")],
+    )
+    .await;
+
+    let r = c.get("/t/acme/p/app/sync").await;
+    assert!(r.body.contains("Proposals awaiting review (1)") && r.body.contains("awaiting review"));
+    let r = c.get("/t/acme/p/app/sync/design/auth").await;
+    assert!(r.body.contains("Proposed ai translation") && r.body.contains("First translation."));
+    assert!(r.body.contains("built-in default"));
+
+    let r = c
+        .post(&format!("/t/acme/p/app/proposal/{}/reject", rejected.proposal.id), &[])
+        .await;
+    assert_eq!(r.location.as_deref(), Some("/t/acme/p/app/sync/design/auth"));
+    assert!(app.project_proposals(&sys, "app").await.unwrap().is_empty());
+
+    let accepted = propose("# Auth\n\n- tokens: opaque\n").await;
+    let r = c
+        .post(&format!("/t/acme/p/app/proposal/{}/accept", accepted.proposal.id), &[])
+        .await;
+    assert_eq!(
+        (r.status, r.location.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/t/acme/p/app/sync/design/auth"))
+    );
+    let ai = app
+        .get_doc(&sys, "app", &auth, Variant::Ai)
+        .await
+        .unwrap()
+        .head
+        .unwrap();
+    assert_eq!(ai.content_hash, Hash::of("# Auth\n\n- tokens: opaque\n"));
+    let r = c.get("/t/acme/p/app/sync").await;
+    assert!(r.body.contains("All sections are in sync.") && !r.body.contains("Proposals awaiting review"));
 }

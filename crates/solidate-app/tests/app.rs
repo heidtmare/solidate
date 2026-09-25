@@ -225,7 +225,8 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
         Err(AppError::Invalid(_))
     ));
 
-    // Imported pair without a base: shared sections conflict, one-sided ones stay ahead.
+    // Creating the second variant translates the first: shared sections start in
+    // sync, one-sided ones stay ahead.
     put(
         &app,
         &ctx,
@@ -250,7 +251,6 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
     )
     .await
     .unwrap();
-    assert_eq!(app.resolve_paired_sync(&ctx, "app", &path("pair")).await.unwrap(), 1);
     let s = app.doc_sync(&ctx, "app", &path("pair")).await.unwrap();
     let states: Vec<_> = s.sections.iter().map(|x| (x.anchor.as_str(), x.state)).collect();
     assert_eq!(
@@ -275,6 +275,125 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
     .unwrap();
     app.set_doc_sync(&ctx, "app", &path("notes"), false).await.unwrap();
     assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn translation_proposals(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let human = "# Auth\n\nTokens are opaque.\n\n## Expiry\n\nSessions last 14 days.\n";
+    let ai = "# Auth\n\n- tokens: opaque\n\n## Expiry\n\n- session_ttl: 14d\n";
+    put(&app, &ctx, "app", "auth", Variant::Human, human, Expect::Absent, &[])
+        .await
+        .unwrap();
+    put(&app, &ctx, "app", "auth", Variant::Ai, ai, Expect::Absent, &[])
+        .await
+        .unwrap();
+    assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+
+    let guide = app.translation_guide(&ctx, "app").await.unwrap();
+    assert_eq!(guide.source, None);
+    assert_eq!(guide.content, solidate_app::DEFAULT_GUIDE);
+
+    let human2 = human.replace("14 days", "30 days");
+    put(&app, &ctx, "app", "auth", Variant::Human, &human2, Expect::Any, &[])
+        .await
+        .unwrap();
+    let propose = |content: &'static str, base: Option<Hash>, resolves: Vec<String>| {
+        let app = app.clone();
+        let ctx = ctx.clone();
+        async move {
+            app.propose(
+                &ctx,
+                solidate_app::Propose {
+                    project: "app",
+                    path: &path("auth"),
+                    variant: Variant::Ai,
+                    content,
+                    base,
+                    message: Some("ttl 30d"),
+                    resolves: &resolves,
+                },
+            )
+            .await
+        }
+    };
+    let ai2 = "# Auth\n\n- tokens: opaque\n\n## Expiry\n\n- session_ttl: 30d\n";
+
+    // Stale base and unknown anchors are refused.
+    assert!(matches!(
+        propose(ai2, None, vec![]).await,
+        Err(AppError::PreconditionFailed { current: Some(h) }) if h == Hash::of(ai)
+    ));
+    assert!(matches!(
+        propose(ai2, Some(Hash::of(ai)), vec!["nope".into()]).await,
+        Err(AppError::Invalid(_))
+    ));
+
+    // Default resolves: every pending section.
+    let p = propose(ai2, Some(Hash::of(ai)), vec![]).await.unwrap();
+    assert_eq!(p.proposal.resolves, ["expiry"]);
+    assert!(!p.outdated);
+    assert!(p.diff.contains("+- session_ttl: 30d"), "{}", p.diff);
+    let q = app.sync_queue(&ctx, "app").await.unwrap();
+    assert_eq!(q[0].proposal.map(|r| (r.id, r.outdated)), Some((p.proposal.id, false)));
+
+    // A new submission replaces the open one.
+    let p = propose(ai2, Some(Hash::of(ai)), vec!["expiry".into()]).await.unwrap();
+    assert_eq!(app.project_proposals(&ctx, "app").await.unwrap().len(), 1);
+
+    // Accepting writes the variant, resolves the section and removes the proposal.
+    let r = app.accept_proposal(&ctx, "app", p.proposal.id).await.unwrap();
+    assert_eq!(r.revision.content_hash, Hash::of(ai2));
+    assert_eq!(r.revision.message.as_deref(), Some("ttl 30d"));
+    assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+    assert!(app.project_proposals(&ctx, "app").await.unwrap().is_empty());
+    assert!(matches!(
+        app.accept_proposal(&ctx, "app", p.proposal.id).await,
+        Err(AppError::NotFound)
+    ));
+
+    // The source moving after submission makes a proposal outdated.
+    let human3 = human2.replace("opaque", "random");
+    put(&app, &ctx, "app", "auth", Variant::Human, &human3, Expect::Any, &[])
+        .await
+        .unwrap();
+    let ai3 = "# Auth\n\n- tokens: random\n\n## Expiry\n\n- session_ttl: 30d\n";
+    let p = propose(ai3, Some(Hash::of(ai2)), vec![]).await.unwrap();
+    let human4 = human3.replace("30 days", "31 days");
+    put(&app, &ctx, "app", "auth", Variant::Human, &human4, Expect::Any, &[])
+        .await
+        .unwrap();
+    assert!(app.doc_proposals(&ctx, "app", &path("auth")).await.unwrap()[0].outdated);
+    assert!(matches!(
+        app.accept_proposal(&ctx, "app", p.proposal.id).await,
+        Err(AppError::PreconditionFailed { .. })
+    ));
+    assert_eq!(app.reject_proposal(&ctx, "app", p.proposal.id).await.unwrap(), "auth");
+    assert!(app.project_proposals(&ctx, "app").await.unwrap().is_empty());
+
+    // Writing the target variant directly supersedes its proposal.
+    propose(ai3, Some(Hash::of(ai2)), vec![]).await.unwrap();
+    put(&app, &ctx, "app", "auth", Variant::Ai, ai3, Expect::Any, &[])
+        .await
+        .unwrap();
+    assert!(app.project_proposals(&ctx, "app").await.unwrap().is_empty());
+
+    // A guide in a parent project applies through inheritance.
+    put(
+        &app,
+        &ctx,
+        "shared",
+        solidate_app::GUIDE_PATH,
+        Variant::Human,
+        "# Guide\n\nAI variant: YAML-like lists.\n",
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    let guide = app.translation_guide(&ctx, "app").await.unwrap();
+    assert_eq!(guide.source.as_deref(), Some("shared:_meta/translation"));
+    assert!(guide.content.contains("YAML-like"));
 }
 
 #[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]

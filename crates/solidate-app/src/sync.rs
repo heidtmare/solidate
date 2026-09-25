@@ -14,6 +14,7 @@ use crate::audit::record;
 use crate::ctx::{Access, Ctx};
 use crate::error::{AppError, Result, invalid};
 use crate::projects::project_by_slug;
+use crate::proposals::{ProposalRef, proposal_refs};
 
 pub(crate) struct Plan {
     pub plan: Vec<SectionSync>,
@@ -87,6 +88,8 @@ pub struct SectionStatus {
     /// Whether the section exists in each variant.
     pub in_human: bool,
     pub in_ai: bool,
+    /// Open translation proposal covering the section.
+    pub proposal: Option<ProposalRef>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -97,6 +100,8 @@ pub struct QueueEntry {
     pub section_title: String,
     pub state: SyncState,
     pub stale_side: Option<Variant>,
+    /// Open translation proposal covering the section.
+    pub proposal: Option<ProposalRef>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -134,7 +139,13 @@ fn titles(p: &Plan) -> HashMap<&str, &str> {
         .collect()
 }
 
-async fn own_doc(tx: &mut TenantTx, ctx: &Ctx, project: &str, path: &DocPath, access: Access) -> Result<Document> {
+pub(crate) async fn own_doc(
+    tx: &mut TenantTx,
+    ctx: &Ctx,
+    project: &str,
+    path: &DocPath,
+    access: Access,
+) -> Result<Document> {
     let p = project_by_slug(tx, project).await?;
     ctx.require(access, Some(&p))?;
     tx.document_by_path(p.id, path).await?.ok_or(AppError::NotFound)
@@ -145,6 +156,7 @@ impl App {
         let mut tx = self.tx(ctx).await?;
         let document = own_doc(&mut tx, ctx, project, path, Access::Read).await?;
         let p = doc_plan(&mut tx, document.id).await?;
+        let proposals = proposal_refs(&tx.document_proposals(document.id).await?, &p);
         let titles = titles(&p);
         let sections = p
             .plan
@@ -156,6 +168,7 @@ impl App {
                 stale_side: s.state.stale_side(),
                 in_human: s.human.is_some(),
                 in_ai: s.ai.is_some(),
+                proposal: proposals.get(&s.anchor).copied(),
             })
             .collect();
         Ok(DocSync {
@@ -174,6 +187,7 @@ impl App {
         let mut out = Vec::new();
         for d in tx.documents(p.id).await?.into_iter().filter(|d| d.sync_enabled) {
             let plan = doc_plan(&mut tx, d.id).await?;
+            let proposals = proposal_refs(&tx.document_proposals(d.id).await?, &plan);
             let titles = titles(&plan);
             for s in plan.plan.iter().filter(|s| s.state.needs_attention()) {
                 out.push(QueueEntry {
@@ -183,6 +197,7 @@ impl App {
                     section_title: titles.get(s.anchor.as_str()).copied().unwrap_or_default().to_owned(),
                     state: s.state,
                     stale_side: s.state.stale_side(),
+                    proposal: proposals.get(&s.anchor).copied(),
                 });
             }
         }

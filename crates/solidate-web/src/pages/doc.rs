@@ -255,7 +255,7 @@ async fn edit(cx: &Cx) -> Result<impl View> {
                     Variant::Human => (&item.human, &item.human_diff),
                     Variant::Ai => (&item.ai, &item.ai_diff),
                 };
-                <p class="notice">(format!("Saving marks section #{} as in sync.", item.anchor))</p>
+                <p class="notice">(format!("You are translating section #{} from the {other} variant. Saving marks it as in sync.", item.anchor))</p>
                 <details open="">
                     <summary>(format!("{other} variant of #{}", item.anchor))</summary>
                     match diff.as_deref().filter(|d| !d.is_empty()) {

@@ -14,6 +14,7 @@ mod global;
 mod ids;
 mod models;
 mod projects;
+mod proposals;
 mod search;
 mod sync;
 mod tokens;
@@ -27,6 +28,7 @@ pub use audit::NewAudit;
 pub use documents::{Author, Expect, NewRevision};
 pub use ids::*;
 pub use models::*;
+pub use proposals::NewProposal;
 pub use tokens::NewToken;
 
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");

@@ -1,5 +1,5 @@
 //! HTTP API under `/api/v1`. Authentication: `Authorization: Bearer sol_…`; the
-//! token determines the tenant. Responses are JSON unless noted. Errors have the
+//! credential determines the tenant. Responses are JSON unless noted. Errors have the
 //! shape `{"error": {"code": "...", "message": "..."}}`. Requests are rate limited
 //! per token; exhausted tokens get `429 rate_limited` with `Retry-After` (seconds).
 //!
@@ -23,7 +23,7 @@ use topcoat::router::request::headers;
 use topcoat::router::response::Response;
 use topcoat::router::{Body, HeaderValue, StatusCode, header, path_param_segments};
 
-use crate::auth::app;
+use crate::auth::{app, challenge, credential};
 
 pub(crate) struct ApiError {
     status: StatusCode,
@@ -68,8 +68,7 @@ impl ApiError {
             },
         );
         if self.status == StatusCode::UNAUTHORIZED {
-            res.headers_mut()
-                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+            res.headers_mut().insert(header::WWW_AUTHENTICATE, challenge());
         }
         if let Some(h) = self.etag {
             res.headers_mut().insert(header::ETAG, etag(h));
@@ -129,12 +128,8 @@ pub(crate) fn finish(r: ApiResult) -> topcoat::Result<Response> {
 }
 
 pub(crate) async fn api_ctx(cx: &Cx) -> Result<Ctx, ApiError> {
-    let token = headers(cx)
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or(AppError::Unauthorized)?;
-    Ok(app(cx).token_ctx(token).await?)
+    let credential = credential(headers(cx).get(header::AUTHORIZATION)).ok_or(AppError::Unauthorized)?;
+    Ok(app(cx).authenticate(credential).await?)
 }
 
 pub(crate) fn json<T: Serialize>(status: StatusCode, value: &T) -> Response {

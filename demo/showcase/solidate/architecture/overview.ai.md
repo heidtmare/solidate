@@ -40,7 +40,7 @@ Rust workspace, 6 crates, PostgreSQL 17. Strict layering; front ends thin.
 ## Request lifecycle {#lifecycle}
 
 1. front end authenticates: session cookie (web) | bearer token (API, MCP).
-2. build `Ctx { tenant, actor }`.
+2. build `Ctx { tenant, principal, grant }`; principal = author identity (user | token | system), grant = level (role | scopes | unrestricted) + optional project restriction.
 3. call `App` method -> open `TenantTx` -> `ctx.require(access, project)` -> work -> audit entry (if mutating) -> commit.
 4. render HTML | JSON | MCP result.
 

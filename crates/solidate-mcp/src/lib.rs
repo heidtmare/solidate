@@ -1,8 +1,8 @@
 //! MCP server over [`solidate_app`]. Tools map one-to-one to app operations; all
-//! authorization happens in the app layer through the caller's API token.
+//! authorization happens in the app layer through the caller's credential.
 //!
 //! Transports:
-//! - stdio ([`SolidateMcp::with_token`]): one fixed token for the process.
+//! - stdio ([`SolidateMcp::with_bearer`]): one fixed bearer credential for the process.
 //! - streamable HTTP ([`http_service`]): the host server authenticates each request.
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use solidate_app::core::{DocPath, Hash, Variant, analyze};
 use solidate_app::db::Expect;
-use solidate_app::{App, AppError, Ctx, Propose, PutDoc};
+use solidate_app::{App, AppError, Credential, Ctx, Propose, PutDoc};
 use time::format_description::well_known::Rfc3339;
 
 const INSTRUCTIONS: &str = "Solidate stores project documentation as one ground truth written twice: every document \
@@ -37,9 +37,9 @@ type ToolResult = Result<CallToolResult, McpError>;
 #[derive(Clone)]
 pub struct SolidateMcp {
     app: App,
-    /// Fixed token (stdio). `None`: the HTTP layer authenticates each request and
+    /// Fixed bearer credential (stdio). `None`: the HTTP layer authenticates each request and
     /// stores the [`Ctx`] in the request extensions.
-    token: Option<Arc<str>>,
+    bearer: Option<Arc<str>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -203,11 +203,11 @@ pub struct HistoryArgs {
 }
 
 impl SolidateMcp {
-    /// Server authenticating every call with `token` (stdio).
-    pub fn with_token(app: App, token: impl Into<Arc<str>>) -> Self {
+    /// Server authenticating every call with bearer credential `bearer` (stdio).
+    pub fn with_bearer(app: App, bearer: impl Into<Arc<str>>) -> Self {
         Self {
             app,
-            token: Some(token.into()),
+            bearer: Some(bearer.into()),
             tool_router: Self::tool_router(),
         }
     }
@@ -216,14 +216,14 @@ impl SolidateMcp {
     fn for_http(app: App) -> Self {
         Self {
             app,
-            token: None,
+            bearer: None,
             tool_router: Self::tool_router(),
         }
     }
 
     async fn ctx(&self, ext: &Extensions) -> Result<Ctx, AppError> {
-        match &self.token {
-            Some(t) => self.app.token_ctx(t).await,
+        match &self.bearer {
+            Some(b) => self.app.authenticate(Credential::Bearer(b)).await,
             None => ext
                 .get::<http::request::Parts>()
                 .and_then(|p| p.extensions.get::<Ctx>())

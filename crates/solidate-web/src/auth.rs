@@ -3,10 +3,11 @@
 use std::time::Duration;
 
 use solidate_app::db::User;
-use solidate_app::{App, Ctx};
+use solidate_app::{App, Credential, Ctx};
 use topcoat::Result;
 use topcoat::context::{Cx, app_context, memoize};
 use topcoat::cookie::{Cookie, Cookies, SameSite, cookies};
+use topcoat::router::HeaderValue;
 use topcoat::router::error::redirect;
 use topcoat::router::request::uri;
 use topcoat::session::{self, Token, TokenStore, TokenStoreFuture};
@@ -18,6 +19,18 @@ pub const SESSION_LIFETIME: Duration = Duration::from_secs(14 * 24 * 3600);
 
 pub fn app(cx: &Cx) -> &App {
     app_context::<App>(cx)
+}
+
+/// The credential in an `Authorization` header, if it uses a supported scheme.
+pub fn credential(authorization: Option<&HeaderValue>) -> Option<Credential<'_>> {
+    authorization
+        .and_then(|v| v.to_str().ok())
+        .and_then(Credential::from_authorization)
+}
+
+/// `WWW-Authenticate` value for `401` responses.
+pub fn challenge() -> HeaderValue {
+    HeaderValue::from_static(Credential::CHALLENGE)
 }
 
 #[memoize(as_ref)]

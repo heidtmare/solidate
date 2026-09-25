@@ -1,5 +1,9 @@
 //! Passwords, sessions, API tokens, and building a [`Ctx`].
 //!
+//! Request credentials enter through [`App::authenticate`], which picks the
+//! scheme from the [`Credential`] and applies rate limiting. A new scheme adds a
+//! `Credential` variant or a bearer format, and a function producing a [`Ctx`].
+//!
 //! API token format: `sol_<12 hex>_<64 hex>`. The `sol_<12 hex>` part is the stored
 //! lookup prefix; the rest is the secret, stored as its BLAKE3 hash. Secrets carry
 //! 256 bits of entropy, so a fast hash is sufficient.
@@ -16,11 +20,31 @@ use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 
 use crate::audit::record;
-use crate::ctx::{Access, Actor, Ctx};
+use crate::ctx::{Access, Ctx, Grant, Level, Principal};
 use crate::error::{AppError, Result, invalid};
 use crate::{App, Config};
 
 pub const TOKEN_PREFIX: &str = "sol_";
+
+/// A credential presented with a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Credential<'a> {
+    /// Bearer token (`Authorization: Bearer …`, or `SOLIDATE_TOKEN` for stdio MCP).
+    Bearer(&'a str),
+}
+
+impl<'a> Credential<'a> {
+    /// `WWW-Authenticate` challenge for requests without a valid credential.
+    pub const CHALLENGE: &'static str = "Bearer";
+
+    /// Parses an `Authorization` header value. `None` for unsupported schemes.
+    /// Scheme names are case-insensitive (RFC 9110 §11.1).
+    pub fn from_authorization(value: &'a str) -> Option<Self> {
+        let (scheme, param) = value.trim().split_once(' ')?;
+        let param = param.trim_start();
+        (scheme.eq_ignore_ascii_case("bearer") && !param.is_empty()).then_some(Self::Bearer(param))
+    }
+}
 
 /// A newly created token. `secret` is the full token string; it is not stored.
 #[derive(Debug, Clone)]
@@ -74,7 +98,7 @@ impl App {
         check_password_policy(&self.config, password)?;
         Ok(self
             .db
-            .create_user(email, name.trim(), &hash_password(password)?)
+            .create_user(email, name.trim(), Some(&hash_password(password)?))
             .await?)
     }
 
@@ -84,14 +108,17 @@ impl App {
     }
 
     /// Verifies credentials. Fails with `Unauthorized` for unknown users, wrong
-    /// passwords and disabled accounts alike.
+    /// passwords, users without a password and disabled accounts alike.
     pub async fn login(&self, email: &str, password: &str) -> Result<User> {
-        match self.db.user_by_email(email).await? {
-            Some(u) if verify_password(password, &u.password_hash) && u.disabled_at.is_none() => {
-                tracing::info!(target: "solidate::auth", user = %u.id, "login");
-                Ok(u)
-            }
-            Some(u) => {
+        match self.db.password_login(email).await? {
+            Some(l) => {
+                let hash = l.hash.as_deref();
+                let verified = verify_password(password, hash.unwrap_or(dummy_hash())) && hash.is_some();
+                let u = l.user;
+                if verified && u.disabled_at.is_none() {
+                    tracing::info!(target: "solidate::auth", user = %u.id, "login");
+                    return Ok(u);
+                }
                 tracing::info!(target: "solidate::auth", user = %u.id, "login rejected");
                 Err(AppError::Unauthorized)
             }
@@ -127,7 +154,8 @@ impl App {
         let tenant = self.db.create_tenant(slug, name).await?;
         let ctx = Ctx {
             tenant: tenant.clone(),
-            actor: Actor::System,
+            principal: Principal::System,
+            grant: Grant::unrestricted(),
         };
         let mut tx = self.tx(&ctx).await?;
         record(
@@ -150,14 +178,19 @@ impl App {
         let role = tx.role(user).await?.ok_or(AppError::Forbidden)?;
         Ok(Ctx {
             tenant,
-            actor: Actor::User { id: user, role },
+            principal: Principal::User(user),
+            grant: Grant {
+                level: Level::Role(role),
+                project: None,
+            },
         })
     }
 
     pub async fn system_ctx(&self, tenant_slug: &str) -> Result<Ctx> {
         Ok(Ctx {
             tenant: self.tenant(tenant_slug).await?,
-            actor: Actor::System,
+            principal: Principal::System,
+            grant: Grant::unrestricted(),
         })
     }
 
@@ -233,8 +266,31 @@ impl App {
         Ok(tx.commit().await?)
     }
 
-    /// Authenticates a raw `sol_…` token.
+    /// Authenticates a request credential. Each scheme checks the principal's
+    /// rate limit after verifying the credential and before loading the tenant.
+    pub async fn authenticate(&self, credential: Credential<'_>) -> Result<Ctx> {
+        match credential {
+            Credential::Bearer(raw) if raw.trim().starts_with(TOKEN_PREFIX) => self.api_token_ctx(raw).await,
+            Credential::Bearer(_) => Err(AppError::Unauthorized),
+        }
+    }
+
+    /// Shorthand for [`App::authenticate`] with a bearer token.
     pub async fn token_ctx(&self, raw: &str) -> Result<Ctx> {
+        self.authenticate(Credential::Bearer(raw)).await
+    }
+
+    fn check_rate_limit(&self, principal: Principal) -> Result<()> {
+        self.limiter.check(principal).map_err(|wait| {
+            tracing::warn!(target: "solidate::auth", %principal, "rate limit exceeded");
+            AppError::RateLimited {
+                retry_after_secs: wait.as_secs_f64().ceil().max(1.0) as u64,
+            }
+        })
+    }
+
+    /// Verifies a raw `sol_…` token.
+    async fn api_token_ctx(&self, raw: &str) -> Result<Ctx> {
         let raw = raw.trim();
         let rest = raw.strip_prefix(TOKEN_PREFIX).ok_or(AppError::Unauthorized)?;
         let (id, secret) = rest.split_once('_').ok_or(AppError::Unauthorized)?;
@@ -249,21 +305,17 @@ impl App {
         if !matches || creds.revoked_at.is_some() || creds.expires_at.is_some_and(|e| e <= now) {
             return Err(AppError::Unauthorized);
         }
-        if let Err(wait) = self.limiter.check(creds.id) {
-            tracing::warn!(target: "solidate::auth", token = %creds.id, "rate limit exceeded");
-            return Err(AppError::RateLimited {
-                retry_after_secs: wait.as_secs_f64().ceil().max(1.0) as u64,
-            });
-        }
+        let principal = Principal::Token(creds.id);
+        self.check_rate_limit(principal)?;
         let mut tx = self.db.tenant(creds.tenant_id).await?;
         let tenant = tx.tenant_row().await?;
         tx.touch_token(creds.id).await?;
         tx.commit().await?;
         Ok(Ctx {
             tenant,
-            actor: Actor::Token {
-                id: creds.id,
-                scopes: creds.scopes,
+            principal,
+            grant: Grant {
+                level: Level::Scopes(creds.scopes),
                 project: creds.project_id,
             },
         })
@@ -281,5 +333,20 @@ mod tests {
         assert!(verify_password("correct horse", &h));
         assert!(!verify_password("wrong", &h));
         assert!(!verify_password("x", "not a phc string"));
+    }
+
+    #[test]
+    fn parses_authorization_header() {
+        assert_eq!(
+            Credential::from_authorization("Bearer sol_a_b"),
+            Some(Credential::Bearer("sol_a_b"))
+        );
+        assert_eq!(
+            Credential::from_authorization("bearer  sol_a_b "),
+            Some(Credential::Bearer("sol_a_b"))
+        );
+        assert_eq!(Credential::from_authorization("Basic dXNlcjpwdw=="), None);
+        assert_eq!(Credential::from_authorization("Bearer"), None);
+        assert_eq!(Credential::from_authorization("Bearer "), None);
     }
 }

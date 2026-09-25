@@ -1,4 +1,5 @@
-//! Per-token request rate limiting: an in-process token bucket per API token.
+//! Per-principal request rate limiting: an in-process token bucket per
+//! authenticated principal.
 //!
 //! Limits apply per server process; running several replicas multiplies the
 //! effective limit by the replica count.
@@ -7,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use solidate_db::TokenId;
+use crate::ctx::Principal;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RateLimit {
@@ -60,7 +61,7 @@ const PRUNE_AT: usize = 4096;
 
 pub(crate) struct RateLimiter {
     limit: Option<RateLimit>,
-    buckets: Mutex<HashMap<TokenId, Bucket>>,
+    buckets: Mutex<HashMap<Principal, Bucket>>,
 }
 
 impl RateLimiter {
@@ -72,23 +73,26 @@ impl RateLimiter {
         }
     }
 
-    /// Counts one request for `token`. `Err` carries the wait until the next
-    /// request is allowed.
-    pub(crate) fn check(&self, token: TokenId) -> Result<(), Duration> {
-        self.check_at(token, Instant::now())
+    /// Counts one request for `principal`. `Err` carries the wait until the next
+    /// request is allowed. [`Principal::System`] is never limited.
+    pub(crate) fn check(&self, principal: Principal) -> Result<(), Duration> {
+        self.check_at(principal, Instant::now())
     }
 
-    fn check_at(&self, token: TokenId, now: Instant) -> Result<(), Duration> {
+    fn check_at(&self, principal: Principal, now: Instant) -> Result<(), Duration> {
         let Some(limit) = &self.limit else { return Ok(()) };
+        if principal == Principal::System {
+            return Ok(());
+        }
         let mut buckets = self.buckets.lock().unwrap_or_else(|p| p.into_inner());
-        if buckets.len() >= PRUNE_AT && !buckets.contains_key(&token) {
+        if buckets.len() >= PRUNE_AT && !buckets.contains_key(&principal) {
             buckets.retain(|_, b| {
                 b.refill(limit, now);
                 b.tokens < f64::from(limit.burst)
             });
         }
         buckets
-            .entry(token)
+            .entry(principal)
             .or_insert_with(|| Bucket::full(limit, now))
             .take(limit, now)
     }
@@ -96,6 +100,8 @@ impl RateLimiter {
 
 #[cfg(test)]
 mod tests {
+    use solidate_db::TokenId;
+
     use super::*;
 
     const LIMIT: RateLimit = RateLimit {
@@ -106,7 +112,7 @@ mod tests {
     #[test]
     fn burst_then_refill() {
         let rl = RateLimiter::new(Some(LIMIT));
-        let (t, t0) = (TokenId::new(), Instant::now());
+        let (t, t0) = (Principal::Token(TokenId::new()), Instant::now());
         for _ in 0..3 {
             assert!(rl.check_at(t, t0).is_ok());
         }
@@ -126,9 +132,13 @@ mod tests {
     }
 
     #[test]
-    fn tokens_are_independent() {
+    fn principals_are_independent() {
         let rl = RateLimiter::new(Some(LIMIT));
-        let (a, b, now) = (TokenId::new(), TokenId::new(), Instant::now());
+        let (a, b, now) = (
+            Principal::Token(TokenId::new()),
+            Principal::Token(TokenId::new()),
+            Instant::now(),
+        );
         for _ in 0..3 {
             rl.check_at(a, now).unwrap();
         }
@@ -146,7 +156,7 @@ mod tests {
             }),
         ] {
             let rl = RateLimiter::new(limit);
-            let (t, now) = (TokenId::new(), Instant::now());
+            let (t, now) = (Principal::Token(TokenId::new()), Instant::now());
             for _ in 0..1000 {
                 assert!(rl.check_at(t, now).is_ok());
             }
@@ -154,19 +164,29 @@ mod tests {
     }
 
     #[test]
+    fn system_is_never_limited() {
+        let rl = RateLimiter::new(Some(LIMIT));
+        let now = Instant::now();
+        for _ in 0..1000 {
+            assert!(rl.check_at(Principal::System, now).is_ok());
+        }
+    }
+
+    #[test]
     fn prune_drops_idle_buckets() {
         let rl = RateLimiter::new(Some(LIMIT));
         let now = Instant::now();
-        let busy = TokenId::new();
+        let busy = Principal::Token(TokenId::new());
         for _ in 0..3 {
             rl.check_at(busy, now).unwrap();
         }
         for _ in 0..PRUNE_AT {
-            rl.check_at(TokenId::new(), now).unwrap();
+            rl.check_at(Principal::Token(TokenId::new()), now).unwrap();
         }
         // After 2 s the other buckets (2 of 3 left) are full again and dropped; the
         // drained one (2 of 3 refilled) is kept.
-        rl.check_at(TokenId::new(), now + Duration::from_secs(2)).unwrap();
+        rl.check_at(Principal::Token(TokenId::new()), now + Duration::from_secs(2))
+            .unwrap();
         let buckets = rl.buckets.lock().unwrap();
         assert!(buckets.len() < 10, "{}", buckets.len());
         assert!(buckets.contains_key(&busy));

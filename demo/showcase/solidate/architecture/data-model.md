@@ -6,10 +6,11 @@ append-only history of revisions with a pointer to the current one.
 
 ## Global tables {#global}
 
-`tenants`, `users` and `sessions` exist before any tenant is known, for example
-while someone signs in. Users are global so that one person can belong to several
-tenants. Email addresses are unique regardless of case. Session tokens and
-passwords are stored only as hashes.
+`tenants`, `users`, `password_credentials` and `sessions` exist before any tenant
+is known, for example while someone signs in. Users are global so that one person
+can belong to several tenants. Email addresses are unique regardless of case.
+Passwords live in `password_credentials`, separate from users, so a user can exist
+without one. Session tokens and passwords are stored only as hashes.
 
 ## Projects and documents {#documents}
 

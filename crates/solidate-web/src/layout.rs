@@ -4,7 +4,7 @@ use topcoat::router::error::{BadRequestError, ForbiddenError, NotFoundError};
 use topcoat::router::{Slot, StatusCode, layout};
 use topcoat::view::{View, error_boundary, view};
 
-use crate::assets::{css_url, htmx_url};
+use crate::assets::{app_js_url, css_url, htmx_url, mermaid_url};
 use crate::auth::current_user;
 
 #[layout("/")]
@@ -19,6 +19,7 @@ async fn root(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                 <title>"Solidate"</title>
                 <link rel="stylesheet" href=(css_url())>
                 <script src=(htmx_url()) defer=""></script>
+                <script src=(app_js_url()) data-mermaid=(mermaid_url()) defer=""></script>
             </head>
             <body>
                 <header class="top">

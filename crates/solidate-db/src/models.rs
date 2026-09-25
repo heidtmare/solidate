@@ -124,8 +124,33 @@ pub struct SearchHit {
     pub title: Option<String>,
     pub variant: Variant,
     pub rank: f32,
-    /// `ts_headline` output; matches wrapped in `<mark>`, other text HTML-escaped.
+    /// `ts_headline` output, unescaped. Matches are delimited by
+    /// [`SNIPPET_START`] and [`SNIPPET_END`]; use [`SearchHit::snippet_html`] for HTML.
     pub snippet: String,
+}
+
+/// Match delimiters in [`SearchHit::snippet`] (Unicode private-use characters).
+pub const SNIPPET_START: char = '\u{E000}';
+pub const SNIPPET_END: char = '\u{E001}';
+
+impl SearchHit {
+    /// The snippet HTML-escaped, with matches wrapped in `<mark>`.
+    pub fn snippet_html(&self) -> String {
+        let mut out = String::with_capacity(self.snippet.len() + 16);
+        for c in self.snippet.chars() {
+            match c {
+                SNIPPET_START => out.push_str("<mark>"),
+                SNIPPET_END => out.push_str("</mark>"),
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&#39;"),
+                c => out.push(c),
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
@@ -159,4 +184,26 @@ pub struct SessionRecord {
     #[sqlx(flatten)]
     pub user: User,
     pub expires_at: OffsetDateTime,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snippet_html_escapes_text_and_marks_matches() {
+        let hit = SearchHit {
+            document_id: DocumentId::new(),
+            project_slug: "p".into(),
+            path: "x".into(),
+            title: None,
+            variant: Variant::Human,
+            rank: 1.0,
+            snippet: format!("<script>{SNIPPET_START}rotated{SNIPPET_END} & \"x\""),
+        };
+        assert_eq!(
+            hit.snippet_html(),
+            "&lt;script&gt;<mark>rotated</mark> &amp; &quot;x&quot;"
+        );
+    }
 }

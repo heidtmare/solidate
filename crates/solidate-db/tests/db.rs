@@ -162,7 +162,7 @@ async fn revisions_heads_sections_links(pool: PgPoolOptions, opts: PgConnectOpti
 
     let hits = tx.search("rotated", None, 10).await.unwrap();
     assert_eq!(hits.len(), 1);
-    assert!(hits[0].snippet.contains("<mark>rotated</mark>"));
+    assert!(hits[0].snippet_html().contains("<mark>rotated</mark>"));
 
     tx.delete_document(other.id).await.unwrap();
     assert_eq!(tx.documents(p.id).await.unwrap().len(), 1);

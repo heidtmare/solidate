@@ -326,7 +326,7 @@ impl App {
         project: &str,
         path: &DocPath,
         variant: Variant,
-        href: &dyn Fn(&LinkTarget) -> Option<String>,
+        href: &(dyn Fn(&LinkTarget) -> Option<String> + Sync),
     ) -> Result<RenderedDoc> {
         let mut tx = self.tx(ctx).await?;
         let p = project_by_slug(&mut tx, project).await?;

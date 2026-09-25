@@ -6,7 +6,7 @@ Solidate pairs the two variants section by section, hashes each section, and sho
 
 ## Walkthrough
 
-[![Solidate walkthrough](https://img.shields.io/badge/▶_Watch-walkthrough_video-blue)](demo/showcase/recording/solidate-walkthrough.mp4)
+[![Solidate walkthrough teaser](demo/showcase/recording/solidate-teaser.gif)](demo/showcase/recording/solidate-walkthrough.mp4)
 
 [`demo/showcase/recording/solidate-walkthrough.mp4`](demo/showcase/recording/solidate-walkthrough.mp4) covers sign-in, the project home, a document in both variants, the sync queue, conflict details, accepting an agent proposal, translating a section by hand, an agent translating over REST, history, search and `llms.txt`.
 It is recorded against the showcase data in [demo/showcase](demo/showcase/README.md), which is Solidate's own documentation stored in Solidate.

@@ -11,16 +11,16 @@
 //! | no            | yes        | `AiAhead`     |
 //! | yes           | yes        | `Conflict`    |
 //!
-//! Extra rules:
+//! Additional rules:
 //!
 //! - A missing side counts as a hash of `None`. Adding or deleting a section is a
-//!   change like any other, so a section that exists only in the human variant is
-//!   `HumanAhead` until someone writes its AI counterpart, or deletes the human one.
+//!   change, so a section present only in the human variant is `HumanAhead` until
+//!   its AI counterpart is written or the human section is deleted.
 //! - If both sides currently have identical content, the pair is `InSync`.
 //! - A pair that's missing on both sides is dropped from the plan.
 //!
-//! Solidate never propagates changes itself. People or agents act on the plan, then
-//! [`reconcile`] records the new base.
+//! This module does not propagate content. External actors (users, agents) edit the
+//! stale side; [`reconcile`] then records the new base.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -114,6 +114,16 @@ impl SyncState {
 
     pub fn needs_attention(self) -> bool {
         self != Self::InSync
+    }
+}
+
+impl FromStr for SyncState {
+    type Err = crate::auth::ParseEnumError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        [Self::InSync, Self::HumanAhead, Self::AiAhead, Self::Conflict]
+            .into_iter()
+            .find(|v| v.as_str() == s)
+            .ok_or_else(|| crate::auth::ParseEnumError::new("sync state", s))
     }
 }
 

@@ -1,9 +1,8 @@
 //! Transclusion: expands `{{include [project:]path[#anchor]}}` directives.
 //!
 //! Expansion is recursive, with cycle detection and a depth limit. Each included
-//! piece is recorded with its hash, so the caller can fold those hashes into the
-//! including document's resolved hash. When shared content changes upstream, every
-//! document that includes it goes stale too.
+//! piece is recorded with its hash; [`Expansion::resolved_hash`] folds these into the
+//! including document's hash, so upstream changes invalidate dependents.
 
 use comrak::{Arena, parse_document};
 

@@ -124,6 +124,42 @@ impl<K: Into<String>> FromIterator<(K, Hash)> for Merkle {
     }
 }
 
+/// Stored as `bytea`.
+#[cfg(feature = "sqlx")]
+mod sqlx_impl {
+    use sqlx::encode::IsNull;
+    use sqlx::error::BoxDynError;
+    use sqlx::postgres::{PgArgumentBuffer, PgHasArrayType, PgTypeInfo, PgValueRef};
+    use sqlx::{Decode, Encode, Postgres, Type};
+
+    use super::Hash;
+
+    impl Type<Postgres> for Hash {
+        fn type_info() -> PgTypeInfo {
+            <Vec<u8> as Type<Postgres>>::type_info()
+        }
+    }
+
+    impl PgHasArrayType for Hash {
+        fn array_type_info() -> PgTypeInfo {
+            <Vec<u8> as PgHasArrayType>::array_type_info()
+        }
+    }
+
+    impl Encode<'_, Postgres> for Hash {
+        fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
+            <&[u8] as Encode<Postgres>>::encode(self.0.as_slice(), buf)
+        }
+    }
+
+    impl<'r> Decode<'r, Postgres> for Hash {
+        fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+            let bytes = <&[u8] as Decode<Postgres>>::decode(value)?;
+            Ok(Hash(bytes.try_into().map_err(|_| "hash must be 32 bytes")?))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

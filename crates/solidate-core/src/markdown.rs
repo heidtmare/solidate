@@ -1,7 +1,7 @@
 //! Markdown analysis and rendering on top of Comrak.
 //!
-//! Stored content is never rewritten: people keep their own formatting. Normalization
-//! exists only to compute semantic hashes (see [`crate::hash`]).
+//! Stored content is never rewritten. Normalization is used only for semantic hashes
+//! (see [`crate::hash`]).
 //!
 //! A document splits into **sections** at every top-level heading, plus a preamble for
 //! any text before the first heading. Each section has a stable **anchor**. It comes

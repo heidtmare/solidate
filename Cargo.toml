@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 solidate-core = { path = "crates/solidate-core" }
+solidate-db = { path = "crates/solidate-db" }
 
 blake3 = "1"
 comrak = { version = "0.55", default-features = false }
@@ -17,3 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 proptest = "1"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "uuid", "time", "json"] }
+time = { version = "0.3", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1", features = ["v7", "serde"] }

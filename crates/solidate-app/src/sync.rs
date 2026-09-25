@@ -261,4 +261,23 @@ impl App {
         }
         self.doc_sync(ctx, project, path).await
     }
+
+    /// Marks every section present in both variants as in sync, without editing.
+    /// Sections present on one side only are left as they are. Returns the number
+    /// of sections reconciled.
+    pub async fn resolve_paired_sync(&self, ctx: &Ctx, project: &str, path: &DocPath) -> Result<usize> {
+        let mut tx = self.tx(ctx).await?;
+        let document = own_doc(&mut tx, ctx, project, path, Access::Write).await?;
+        let plan = doc_plan(&mut tx, document.id).await?.plan;
+        let paired: Vec<String> = plan
+            .iter()
+            .filter(|s| s.state.needs_attention() && s.human.is_some() && s.ai.is_some())
+            .map(|s| s.anchor.clone())
+            .collect();
+        if !paired.is_empty() {
+            reconcile_anchors(&mut tx, document.id, plan, &paired).await?;
+        }
+        tx.commit().await?;
+        Ok(paired.len())
+    }
 }

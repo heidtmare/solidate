@@ -225,6 +225,41 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
         Err(AppError::Invalid(_))
     ));
 
+    // Imported pair without a base: shared sections conflict, one-sided ones stay ahead.
+    put(
+        &app,
+        &ctx,
+        "app",
+        "pair",
+        Variant::Human,
+        "# A\n\nh\n\n# Only human\n\nx\n",
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    put(
+        &app,
+        &ctx,
+        "app",
+        "pair",
+        Variant::Ai,
+        "# A\n\n- a\n",
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(app.resolve_paired_sync(&ctx, "app", &path("pair")).await.unwrap(), 1);
+    let s = app.doc_sync(&ctx, "app", &path("pair")).await.unwrap();
+    let states: Vec<_> = s.sections.iter().map(|x| (x.anchor.as_str(), x.state)).collect();
+    assert_eq!(
+        states,
+        [("a", SyncState::InSync), ("only-human", SyncState::HumanAhead)]
+    );
+    assert_eq!(app.resolve_paired_sync(&ctx, "app", &path("pair")).await.unwrap(), 0);
+    app.set_doc_sync(&ctx, "app", &path("pair"), false).await.unwrap();
+
     // Sync disabled: excluded from queue.
     put(
         &app,

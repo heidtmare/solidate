@@ -42,6 +42,9 @@ enum Cmd {
         /// Print what would be imported without writing.
         #[arg(long)]
         dry_run: bool,
+        /// Mark sections present in both variants of an imported document as in sync.
+        #[arg(long)]
+        synced: bool,
     },
     /// Export a project's own documents to a directory.
     Export {
@@ -236,9 +239,10 @@ async fn run(app: &App, cmd: Cmd) -> Result<()> {
             project,
             dir,
             dry_run,
+            synced,
         } => {
             let ctx = app.system_ctx(&tenant).await?;
-            import(app, &ctx, &project, &dir, dry_run).await?;
+            import(app, &ctx, &project, &dir, dry_run, synced).await?;
         }
         Cmd::Export { tenant, project, dir } => {
             let ctx = app.system_ctx(&tenant).await?;
@@ -255,7 +259,7 @@ async fn run(app: &App, cmd: Cmd) -> Result<()> {
     Ok(())
 }
 
-async fn import(app: &App, ctx: &Ctx, project: &str, dir: &Path, dry_run: bool) -> Result<()> {
+async fn import(app: &App, ctx: &Ctx, project: &str, dir: &Path, dry_run: bool, synced: bool) -> Result<()> {
     app.project(ctx, project).await?;
     let mut files: Vec<(DocPath, Variant, PathBuf)> = Vec::new();
     for entry in walkdir::WalkDir::new(dir)
@@ -275,6 +279,12 @@ async fn import(app: &App, ctx: &Ctx, project: &str, dir: &Path, dry_run: bool) 
     }
     // Human variants first so sync state starts from the human side.
     files.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+    // Documents with both variants in this import.
+    let paired: Vec<DocPath> = files
+        .iter()
+        .filter(|(p, v, _)| *v == Variant::Ai && files.iter().any(|(q, w, _)| q == p && *w == Variant::Human))
+        .map(|(p, _, _)| p.clone())
+        .collect();
 
     let (mut written, mut unchanged) = (0, 0);
     for (path, variant, file) in files {
@@ -307,6 +317,16 @@ async fn import(app: &App, ctx: &Ctx, project: &str, dir: &Path, dry_run: bool) 
     }
     if !dry_run {
         println!("{written} written, {unchanged} unchanged");
+    }
+    if synced && !dry_run {
+        let mut reconciled = 0;
+        for path in paired {
+            reconciled += app
+                .resolve_paired_sync(ctx, project, &path)
+                .await
+                .with_context(|| format!("marking {path} in sync"))?;
+        }
+        println!("{reconciled} sections marked in sync");
     }
     Ok(())
 }

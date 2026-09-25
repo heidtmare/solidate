@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use solidate_app::core::{DocPath, Role, Scope, Slug, Variant};
 use solidate_app::db::{Db, Expect};
-use solidate_app::{App, Config, Ctx, PutDoc};
+use solidate_app::{App, Config, Ctx, PutDoc, telemetry};
 use time::{Duration, OffsetDateTime};
 
 #[derive(Parser)]
@@ -54,6 +54,15 @@ enum Cmd {
     },
     /// List sections needing sync in a project.
     SyncQueue { tenant: String, project: String },
+    /// Print a tenant's audit log, newest first (tab-separated).
+    Audit {
+        tenant: String,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// Continue after this entry id.
+        #[arg(long)]
+        before: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -135,6 +144,7 @@ fn read_password() -> Result<String> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
+    telemetry::init("warn");
     let cli = Cli::parse();
     if let Cmd::Migrate = cli.cmd {
         Db::migrate(&cli.database_url).await?;
@@ -253,6 +263,29 @@ async fn run(app: &App, cmd: Cmd) -> Result<()> {
             for e in app.sync_queue(&ctx, &project).await? {
                 let side = e.stale_side.map_or("both", |v| v.as_str());
                 println!("{}#{}\t{}\tstale={side}", e.path, e.anchor, e.state);
+            }
+        }
+        Cmd::Audit { tenant, limit, before } => {
+            let ctx = app.system_ctx(&tenant).await?;
+            let before = before
+                .map(|b| b.parse())
+                .transpose()
+                .context("invalid audit entry id")?;
+            for e in app.audit_log(&ctx, limit, before).await? {
+                let actor = match (e.actor_user_id, e.actor_token_id) {
+                    (Some(u), _) => format!("user:{u}"),
+                    (_, Some(t)) => format!("token:{t}"),
+                    _ => e.actor_kind.clone(),
+                };
+                let at = e.at.format(&time::format_description::well_known::Rfc3339)?;
+                println!(
+                    "{}\t{at}\t{actor}\t{}\t{}\t{}\t{}",
+                    e.id,
+                    e.action,
+                    e.project_slug.as_deref().unwrap_or("-"),
+                    e.target.as_deref().unwrap_or("-"),
+                    e.detail
+                );
             }
         }
     }

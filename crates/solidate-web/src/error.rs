@@ -1,7 +1,7 @@
 //! Mapping service errors to HTTP responses.
 
 use solidate_app::AppError;
-use topcoat::router::error::{bad_request, forbidden, internal_server_error, not_found, redirect};
+use topcoat::router::error::{bad_request, forbidden, internal_server_error, not_found, redirect, too_many_requests};
 
 pub fn http(e: AppError) -> topcoat::Error {
     match e {
@@ -11,7 +11,11 @@ pub fn http(e: AppError) -> topcoat::Error {
         AppError::PreconditionFailed { .. } => bad_request("the document changed; reload and retry").into(),
         AppError::AlreadyExists(_) => bad_request("already exists").into(),
         AppError::Invalid(m) => bad_request(m).into(),
-        e @ AppError::Internal(_) => internal_server_error(e).into(),
+        AppError::RateLimited { retry_after_secs } => too_many_requests(retry_after_secs).into(),
+        AppError::Internal(m) => {
+            tracing::error!(error = %m, "internal error");
+            internal_server_error(AppError::Internal(m)).into()
+        }
     }
 }
 

@@ -1,10 +1,12 @@
 //! Projects and inheritance.
 
+use serde_json::json;
 use solidate_core::Slug;
 use solidate_core::inherit::merge_settings;
 use solidate_db::{Project, TenantTx};
 
 use crate::App;
+use crate::audit::record;
 use crate::ctx::{Access, Ctx};
 use crate::error::{AppError, Result, invalid};
 
@@ -20,6 +22,8 @@ impl App {
             None => None,
         };
         let p = tx.create_project(slug, name.trim(), parent).await?;
+        let detail = json!({ "name": p.name, "parent": parent });
+        record(&mut tx, ctx, "project.create", Some(p.id), Some(&p.slug), detail).await?;
         tx.commit().await?;
         Ok(p)
     }
@@ -54,6 +58,8 @@ impl App {
             None => None,
         };
         tx.set_project_parent(p.id, parent).await?;
+        let detail = json!({ "parent": parent });
+        record(&mut tx, ctx, "project.set_parent", Some(p.id), Some(&p.slug), detail).await?;
         Ok(tx.commit().await?)
     }
 
@@ -65,6 +71,8 @@ impl App {
         let mut tx = self.tx(ctx).await?;
         let p = project_by_slug(&mut tx, slug).await?;
         tx.set_project_settings(p.id, settings).await?;
+        let detail = json!({ "settings": settings });
+        record(&mut tx, ctx, "project.settings", Some(p.id), Some(&p.slug), detail).await?;
         Ok(tx.commit().await?)
     }
 

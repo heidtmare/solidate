@@ -9,11 +9,13 @@ use std::sync::OnceLock;
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
+use serde_json::json;
 use solidate_core::{Role, Scope, Slug};
 use solidate_db::{ApiToken, NewToken, ProjectId, Tenant, User, UserId};
 use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 
+use crate::audit::record;
 use crate::ctx::{Access, Actor, Ctx};
 use crate::error::{AppError, Result, invalid};
 use crate::{App, Config};
@@ -85,10 +87,17 @@ impl App {
     /// passwords and disabled accounts alike.
     pub async fn login(&self, email: &str, password: &str) -> Result<User> {
         match self.db.user_by_email(email).await? {
-            Some(u) if verify_password(password, &u.password_hash) && u.disabled_at.is_none() => Ok(u),
-            Some(_) => Err(AppError::Unauthorized),
+            Some(u) if verify_password(password, &u.password_hash) && u.disabled_at.is_none() => {
+                tracing::info!(target: "solidate::auth", user = %u.id, "login");
+                Ok(u)
+            }
+            Some(u) => {
+                tracing::info!(target: "solidate::auth", user = %u.id, "login rejected");
+                Err(AppError::Unauthorized)
+            }
             None => {
                 verify_password(password, dummy_hash());
+                tracing::info!(target: "solidate::auth", "login rejected: unknown user");
                 Err(AppError::Unauthorized)
             }
         }
@@ -115,7 +124,23 @@ impl App {
     }
 
     pub async fn create_tenant(&self, slug: &Slug, name: &str) -> Result<Tenant> {
-        Ok(self.db.create_tenant(slug, name).await?)
+        let tenant = self.db.create_tenant(slug, name).await?;
+        let ctx = Ctx {
+            tenant: tenant.clone(),
+            actor: Actor::System,
+        };
+        let mut tx = self.tx(&ctx).await?;
+        record(
+            &mut tx,
+            &ctx,
+            "tenant.create",
+            None,
+            Some(&tenant.slug),
+            json!({ "name": name }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(tenant)
     }
 
     /// Context for `user` in tenant `slug`. `Forbidden` if the user is not a member.
@@ -140,6 +165,16 @@ impl App {
         ctx.require(Access::Admin, None)?;
         let mut tx = self.tx(ctx).await?;
         tx.set_membership(user, role).await?;
+        let target = user.to_string();
+        record(
+            &mut tx,
+            ctx,
+            "member.set",
+            None,
+            Some(&target),
+            json!({ "role": role.as_str() }),
+        )
+        .await?;
         Ok(tx.commit().await?)
     }
 
@@ -169,6 +204,14 @@ impl App {
                 expires_at,
             })
             .await?;
+        let target = token.id.to_string();
+        let detail = json!({
+            "name": name,
+            "prefix": token.prefix,
+            "scopes": scopes.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "expires_at": expires_at,
+        });
+        record(&mut tx, ctx, "token.create", project, Some(&target), detail).await?;
         tx.commit().await?;
         Ok(NewApiToken {
             token,
@@ -185,6 +228,8 @@ impl App {
         ctx.require(Access::Admin, None)?;
         let mut tx = self.tx(ctx).await?;
         tx.revoke_token(id).await?;
+        let target = id.to_string();
+        record(&mut tx, ctx, "token.revoke", None, Some(&target), json!({})).await?;
         Ok(tx.commit().await?)
     }
 
@@ -203,6 +248,12 @@ impl App {
         let now = OffsetDateTime::now_utc();
         if !matches || creds.revoked_at.is_some() || creds.expires_at.is_some_and(|e| e <= now) {
             return Err(AppError::Unauthorized);
+        }
+        if let Err(wait) = self.limiter.check(creds.id) {
+            tracing::warn!(target: "solidate::auth", token = %creds.id, "rate limit exceeded");
+            return Err(AppError::RateLimited {
+                retry_after_secs: wait.as_secs_f64().ceil().max(1.0) as u64,
+            });
         }
         let mut tx = self.db.tenant(creds.tenant_id).await?;
         let tenant = tx.tenant_row().await?;

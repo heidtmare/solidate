@@ -2,20 +2,37 @@
 
 use std::convert::Infallible;
 
-use solidate_app::App;
+use solidate_app::{App, AppError};
 use topcoat::router::request::Request;
 use topcoat::router::response::Response;
 use topcoat::router::tower::TowerRoute;
 use topcoat::router::{Body, HeaderValue, StatusCode, header};
 
+fn error_response(status: StatusCode, body: &'static str) -> Response {
+    let mut res = Response::new(Body::from(body));
+    *res.status_mut() = status;
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    res
+}
+
 fn unauthorized() -> Response {
-    let mut res = Response::new(Body::from(
+    let mut res = error_response(
+        StatusCode::UNAUTHORIZED,
         r#"{"error":{"code":"unauthorized","message":"a valid API token is required"}}"#,
-    ));
-    *res.status_mut() = StatusCode::UNAUTHORIZED;
-    let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    h.insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    );
+    res.headers_mut()
+        .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+    res
+}
+
+fn rate_limited(retry_after_secs: u64) -> Response {
+    let mut res = error_response(
+        StatusCode::TOO_MANY_REQUESTS,
+        r#"{"error":{"code":"rate_limited","message":"rate limit exceeded"}}"#,
+    );
+    res.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
     res
 }
 
@@ -51,11 +68,22 @@ pub fn route(
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .map(str::to_owned);
             let ctx = match token {
-                Some(t) => app.token_ctx(&t).await.ok(),
-                None => None,
+                Some(t) => app.token_ctx(&t).await,
+                None => Err(AppError::Unauthorized),
             };
-            let Some(ctx) = ctx else {
-                return Ok::<_, Infallible>(unauthorized());
+            let ctx = match ctx {
+                Ok(ctx) => ctx,
+                Err(AppError::RateLimited { retry_after_secs }) => {
+                    return Ok::<_, Infallible>(rate_limited(retry_after_secs));
+                }
+                Err(AppError::Internal(m)) => {
+                    tracing::error!(error = %m, "mcp authentication failed");
+                    return Ok(error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        r#"{"error":{"code":"internal","message":"internal error"}}"#,
+                    ));
+                }
+                Err(_) => return Ok(unauthorized()),
             };
             req.extensions_mut().insert(ctx);
             let res = tower::Service::call(&mut mcp, req).await?;

@@ -429,3 +429,96 @@ async fn users_tokens_and_authorization(pool: PgPoolOptions, opts: PgConnectOpti
     app.revoke_api_token(&admin, t.token.id).await.unwrap();
     assert!(matches!(app.token_ctx(&t.secret).await, Err(AppError::Unauthorized)));
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn audit_log_records_mutations(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    put(&app, &ctx, "app", "a", Variant::Human, "# A\n", Expect::Absent, &[])
+        .await
+        .unwrap();
+    // Unchanged content writes no entry.
+    put(&app, &ctx, "app", "a", Variant::Human, "# A\n", Expect::Any, &[])
+        .await
+        .unwrap();
+    let rw = app
+        .create_api_token(&ctx, "rw", &[Scope::Write], None, None)
+        .await
+        .unwrap();
+    app.delete_doc(&ctx, "app", &path("a")).await.unwrap();
+
+    let log = app.audit_log(&ctx, 100, None).await.unwrap();
+    let actions: Vec<&str> = log.iter().map(|e| e.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        [
+            "doc.delete",
+            "token.create",
+            "doc.write",
+            "project.create",
+            "project.create",
+            "tenant.create"
+        ]
+    );
+    let write = &log[2];
+    assert_eq!(
+        (
+            write.actor_kind.as_str(),
+            write.project_slug.as_deref(),
+            write.target.as_deref()
+        ),
+        ("system", Some("app"), Some("a"))
+    );
+    assert_eq!(write.detail["variant"], "human");
+    assert_eq!(log[1].target.as_deref(), Some(rw.token.id.to_string().as_str()));
+    assert!(log[1].detail.get("secret").is_none());
+
+    let page = app.audit_log(&ctx, 2, Some(log[1].id)).await.unwrap();
+    assert_eq!(page.iter().map(|e| e.id).collect::<Vec<_>>(), [log[2].id, log[3].id]);
+
+    // Token writes are attributed to the token; reading the log needs admin.
+    let tctx = app.token_ctx(&rw.secret).await.unwrap();
+    put(&app, &tctx, "app", "b", Variant::Human, "# B\n", Expect::Absent, &[])
+        .await
+        .unwrap();
+    let latest = &app.audit_log(&ctx, 1, None).await.unwrap()[0];
+    assert_eq!(
+        (latest.action.as_str(), latest.actor_token_id),
+        ("doc.write", Some(rw.token.id))
+    );
+    assert!(matches!(app.audit_log(&tctx, 10, None).await, Err(AppError::Forbidden)));
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn tokens_are_rate_limited(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let config = Config {
+        rate_limit: Some(solidate_app::RateLimit {
+            per_minute: 1,
+            burst: 2,
+        }),
+        ..Config::default()
+    };
+    let app = App::new(Db::connect_with(pool, opts).await.unwrap(), config);
+    app.create_tenant(&slug("acme"), "Acme").await.unwrap();
+    let ctx = app.system_ctx("acme").await.unwrap();
+    let a = app
+        .create_api_token(&ctx, "a", &[Scope::Read], None, None)
+        .await
+        .unwrap();
+    let b = app
+        .create_api_token(&ctx, "b", &[Scope::Read], None, None)
+        .await
+        .unwrap();
+
+    app.token_ctx(&a.secret).await.unwrap();
+    app.token_ctx(&a.secret).await.unwrap();
+    assert!(matches!(
+        app.token_ctx(&a.secret).await,
+        Err(AppError::RateLimited {
+            retry_after_secs: 59..=60
+        })
+    ));
+    app.token_ctx(&b.secret).await.unwrap();
+    // Invalid secrets are rejected before counting against the token.
+    let wrong = format!("{}_{}", a.token.prefix, "0".repeat(64));
+    assert!(matches!(app.token_ctx(&wrong).await, Err(AppError::Unauthorized)));
+}

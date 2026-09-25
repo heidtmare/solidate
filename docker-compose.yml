@@ -1,3 +1,9 @@
+# `docker compose up` runs Postgres, applies migrations, and starts the server on
+# http://localhost:3000. For tests only: `docker compose up -d postgres`.
+#
+# Administration: docker compose run --rm cli <subcommand>, e.g.
+#   docker compose run --rm cli tenant create acme "Acme"
+
 services:
   postgres:
     image: postgres:17
@@ -14,6 +20,35 @@ services:
       interval: 2s
       timeout: 3s
       retries: 20
+
+  # One-shot: applies migrations with the owner connection, then exits. Also runs
+  # other CLI subcommands (`run --rm cli <subcommand>`).
+  cli:
+    build: .
+    image: solidate
+    entrypoint: ["solidate"]
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgres://solidate:solidate@postgres:5432/solidate
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build: .
+    image: solidate
+    environment:
+      DATABASE_URL: postgres://solidate:solidate@postgres:5432/solidate
+      SOLIDATE_PUBLIC_URL: http://localhost:3000
+      # Plain HTTP on localhost; remove behind TLS.
+      SOLIDATE_INSECURE_COOKIES: "1"
+      RUST_LOG: info
+    ports:
+      - "3000:3000"
+    depends_on:
+      cli:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
 volumes:
   pgdata:

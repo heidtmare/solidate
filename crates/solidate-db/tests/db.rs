@@ -292,3 +292,46 @@ async fn users_sessions_memberships_tokens(pool: PgPoolOptions, opts: PgConnectO
             .is_some()
     );
 }
+
+#[sqlx::test(migrator = "solidate_db::MIGRATOR")]
+async fn audit_log_is_append_only_and_isolated(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let db = db(pool, opts).await;
+    let a = db.create_tenant(&slug("acme"), "Acme").await.unwrap();
+    let b = db.create_tenant(&slug("globex"), "Globex").await.unwrap();
+
+    let mut tx = db.tenant(a.id).await.unwrap();
+    let p = tx.create_project(&slug("docs"), "Docs", None).await.unwrap();
+    for action in ["one", "two", "three"] {
+        tx.audit(NewAudit {
+            actor: Author::System,
+            action,
+            project: Some(p.id),
+            target: Some("x"),
+            detail: serde_json::json!({ "n": action }),
+        })
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let mut tx = db.tenant(a.id).await.unwrap();
+    let all = tx.audit_entries(10, None).await.unwrap();
+    assert_eq!(
+        all.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(),
+        ["three", "two", "one"]
+    );
+    assert_eq!(all[0].project_slug.as_deref(), Some("docs"));
+    let older = tx.audit_entries(10, Some(all[1].id)).await.unwrap();
+    assert_eq!(older.len(), 1);
+    assert_eq!(older[0].action, "one");
+    tx.commit().await.unwrap();
+
+    // The app role has no UPDATE or DELETE privilege on the log.
+    for stmt in ["UPDATE audit_log SET action = 'x'", "DELETE FROM audit_log"] {
+        let err = sqlx::query(stmt).execute(db.pool()).await.unwrap_err();
+        assert!(err.to_string().contains("permission denied"), "{stmt}: {err}");
+    }
+
+    let mut tx = db.tenant(b.id).await.unwrap();
+    assert!(tx.audit_entries(10, None).await.unwrap().is_empty());
+}

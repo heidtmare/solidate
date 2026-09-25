@@ -496,3 +496,75 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
     .await;
     assert!(err && out.contains("forbidden"), "{out}");
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn rate_limit_audit_and_health(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let config = Config {
+        rate_limit: Some(solidate_app::RateLimit {
+            per_minute: 1,
+            burst: 3,
+        }),
+        ..Config::default()
+    };
+    let app = App::new(Db::connect_with(pool, opts).await.unwrap(), config);
+    app.create_tenant(&Slug::parse("acme").unwrap(), "Acme").await.unwrap();
+    let sys = app.system_ctx("acme").await.unwrap();
+    let admin = app
+        .create_api_token(&sys, "admin", &[Scope::Admin], None, None)
+        .await
+        .unwrap();
+    let rw = app
+        .create_api_token(&sys, "rw", &[Scope::Write], None, None)
+        .await
+        .unwrap();
+    let router = router(app, WebConfig::default());
+
+    let r = call(&router, "GET", "/healthz", &[], None).await;
+    assert_eq!((r.status, r.body.as_str()), (StatusCode::OK, "ok"));
+
+    let admin = Api {
+        router: router.clone(),
+        auth: format!("Bearer {}", admin.secret),
+    };
+    let log = admin.req("GET", "/api/v1/audit?limit=2", &[], None).await.json();
+    let actions: Vec<&str> = log["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["action"].as_str().unwrap())
+        .collect();
+    assert_eq!(actions, ["token.create", "token.create"]);
+    assert!(log["entries"][0]["at"].as_str().is_some_and(|t| t.ends_with('Z')));
+    let next = log["next"].as_str().unwrap();
+    let rest = admin
+        .req("GET", &format!("/api/v1/audit?before={next}"), &[], None)
+        .await
+        .json();
+    assert_eq!(rest["entries"][0]["action"], "tenant.create");
+    assert!(rest["next"].is_null());
+
+    let rw_bearer = format!("Bearer {}", rw.secret);
+    let rw = Api {
+        router: router.clone(),
+        auth: rw_bearer.clone(),
+    };
+    let r = rw.req("GET", "/api/v1/audit", &[], None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    rw.req("GET", "/api/v1", &[], None).await;
+    rw.req("GET", "/api/v1", &[], None).await;
+    // Burst of 3 used up (including the forbidden request).
+    let res = router
+        .handle(
+            topcoat::router::request::Request::builder()
+                .uri("/api/v1")
+                .header("authorization", rw_bearer.as_str())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(res.headers()[header::RETRY_AFTER], "60");
+    // MCP over HTTP shares the limit.
+    let r = mcp(&router, &rw_bearer, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
+    assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+}

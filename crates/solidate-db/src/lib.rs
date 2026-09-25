@@ -8,6 +8,7 @@
 //!
 //! Queries use runtime-checked `sqlx::query*` functions.
 
+mod audit;
 mod documents;
 mod global;
 mod ids;
@@ -22,6 +23,7 @@ use std::str::FromStr;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 
+pub use audit::NewAudit;
 pub use documents::{Author, Expect, NewRevision};
 pub use ids::*;
 pub use models::*;
@@ -91,6 +93,12 @@ impl Db {
         let pool = PgPoolOptions::new().max_connections(1).connect(url).await?;
         MIGRATOR.run(&pool).await.map_err(|e| DbError::Sqlx(e.into()))?;
         pool.close().await;
+        Ok(())
+    }
+
+    /// Round-trips a trivial query (health checks).
+    pub async fn ping(&self) -> Result<()> {
+        sqlx::query("SELECT 1").execute(&self.pool).await?;
         Ok(())
     }
 

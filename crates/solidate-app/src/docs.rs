@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use serde_json::json;
 use solidate_core::diff::unified;
 use solidate_core::include::{DEFAULT_MAX_DEPTH, Dependency, expand_includes};
 use solidate_core::markdown::OutlineEntry;
@@ -10,6 +11,7 @@ use solidate_db::{Backlink, Document, Expect, Head, NewRevision, Project, Projec
 use time::OffsetDateTime;
 
 use crate::App;
+use crate::audit::record;
 use crate::ctx::{Access, Ctx};
 use crate::error::{AppError, Result, invalid};
 use crate::projects::project_by_slug;
@@ -189,6 +191,16 @@ impl App {
             Vec::new()
         };
 
+        if created || !req.resolves.is_empty() {
+            let detail = json!({
+                "variant": req.variant,
+                "revision": revision.id,
+                "content_hash": revision.content_hash,
+                "changed": created,
+                "resolves": req.resolves,
+            });
+            record(&mut tx, ctx, "doc.write", Some(p.id), Some(req.path.as_str()), detail).await?;
+        }
         let document = tx.document(document.id).await?.ok_or(AppError::NotFound)?;
         tx.commit().await?;
         Ok(PutResult {
@@ -207,6 +219,7 @@ impl App {
         ctx.require(Access::Write, Some(&p))?;
         let d = tx.document_by_path(p.id, path).await?.ok_or(AppError::NotFound)?;
         tx.delete_document(d.id).await?;
+        record(&mut tx, ctx, "doc.delete", Some(p.id), Some(path.as_str()), json!({})).await?;
         Ok(tx.commit().await?)
     }
 
@@ -216,6 +229,16 @@ impl App {
         ctx.require(Access::Write, Some(&p))?;
         let d = tx.document_by_path(p.id, path).await?.ok_or(AppError::NotFound)?;
         tx.set_sync_enabled(d.id, enabled).await?;
+        let detail = json!({ "enabled": enabled });
+        record(
+            &mut tx,
+            ctx,
+            "doc.sync_setting",
+            Some(p.id),
+            Some(path.as_str()),
+            detail,
+        )
+        .await?;
         Ok(tx.commit().await?)
     }
 

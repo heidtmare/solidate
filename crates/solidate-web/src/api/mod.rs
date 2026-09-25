@@ -1,11 +1,13 @@
 //! HTTP API under `/api/v1`. Authentication: `Authorization: Bearer sol_…`; the
 //! token determines the tenant. Responses are JSON unless noted. Errors have the
-//! shape `{"error": {"code": "...", "message": "..."}}`.
+//! shape `{"error": {"code": "...", "message": "..."}}`. Requests are rate limited
+//! per token; exhausted tokens get `429 rate_limited` with `Retry-After` (seconds).
 //!
 //! Content hashes are exposed as strong ETags (`"<hex>"`). Reads honour
 //! `If-None-Match`; document writes require `If-Match: "<hash>"`, `If-Match: *`,
 //! or `If-None-Match: *` (create only).
 
+mod audit;
 mod docs;
 mod projects;
 mod sync;
@@ -28,6 +30,7 @@ pub(crate) struct ApiError {
     code: &'static str,
     message: String,
     etag: Option<Hash>,
+    retry_after: Option<u64>,
 }
 
 impl ApiError {
@@ -37,6 +40,7 @@ impl ApiError {
             code,
             message: message.into(),
             etag: None,
+            retry_after: None,
         }
     }
 
@@ -70,6 +74,9 @@ impl ApiError {
         if let Some(h) = self.etag {
             res.headers_mut().insert(header::ETAG, etag(h));
         }
+        if let Some(secs) = self.retry_after {
+            res.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
         res
     }
 }
@@ -96,10 +103,18 @@ impl From<AppError> for ApiError {
                     "the document changed; the current ETag is in the response headers",
                 )
             },
+            AppError::RateLimited { retry_after_secs } => Self {
+                retry_after: Some(retry_after_secs),
+                ..Self::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limited",
+                    format!("rate limit exceeded; retry in {retry_after_secs} s"),
+                )
+            },
             AppError::AlreadyExists(what) => Self::new(StatusCode::CONFLICT, "already_exists", what),
             AppError::Invalid(m) => Self::bad_request(m),
             AppError::Internal(m) => {
-                eprintln!("api internal error: {m}");
+                tracing::error!(error = %m, "api internal error");
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", "internal error")
             }
         }

@@ -4,9 +4,11 @@ mod api;
 mod assets;
 mod auth;
 mod error;
+mod health;
 mod layout;
 mod mcp;
 mod pages;
+mod trace;
 mod ui;
 
 use solidate_app::App;
@@ -34,6 +36,7 @@ pub fn router(app: App, web: WebConfig) -> Router {
     Router::builder()
         .discover()
         .route(mcp)
+        .layer(trace::TraceLayer)
         .cookies()
         .sessions(sessions.build())
         .app_context(app)

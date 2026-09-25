@@ -3,12 +3,14 @@
 
 use std::collections::HashMap;
 
+use serde_json::json;
 use solidate_core::diff::unified;
 use solidate_core::sync::{SectionSync, plan, reconcile};
 use solidate_core::{DocPath, Hash, SyncState, Variant, analyze};
 use solidate_db::{Document, DocumentId, Head, SectionRow, TenantTx};
 
 use crate::App;
+use crate::audit::record;
 use crate::ctx::{Access, Ctx};
 use crate::error::{AppError, Result, invalid};
 use crate::projects::project_by_slug;
@@ -262,6 +264,18 @@ impl App {
             let document = own_doc(&mut tx, ctx, project, path, Access::Write).await?;
             let plan = doc_plan(&mut tx, document.id).await?.plan;
             reconcile_anchors(&mut tx, document.id, plan, anchors).await?;
+            if !anchors.is_empty() {
+                let detail = json!({ "anchors": anchors });
+                record(
+                    &mut tx,
+                    ctx,
+                    "sync.resolve",
+                    Some(document.project_id),
+                    Some(&document.path),
+                    detail,
+                )
+                .await?;
+            }
             tx.commit().await?;
         }
         self.doc_sync(ctx, project, path).await
@@ -281,6 +295,16 @@ impl App {
             .collect();
         if !paired.is_empty() {
             reconcile_anchors(&mut tx, document.id, plan, &paired).await?;
+            let detail = json!({ "anchors": paired });
+            record(
+                &mut tx,
+                ctx,
+                "sync.resolve",
+                Some(document.project_id),
+                Some(&document.path),
+                detail,
+            )
+            .await?;
         }
         tx.commit().await?;
         Ok(paired.len())

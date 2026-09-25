@@ -33,8 +33,10 @@ thiserror = "2"
 http = "1"
 rmcp = { version = "3.4", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 proptest = "1"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "uuid", "time", "json"] }
-time = { version = "0.3", features = ["serde"] }
+time = { version = "0.3", features = ["serde", "formatting"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["v7", "serde"] }

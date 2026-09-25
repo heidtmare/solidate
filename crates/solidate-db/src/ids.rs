@@ -40,4 +40,4 @@ macro_rules! ids {
     )*};
 }
 
-ids!(TenantId, UserId, ProjectId, DocumentId, RevisionId, TokenId);
+ids!(TenantId, UserId, ProjectId, DocumentId, RevisionId, TokenId, AuditId);

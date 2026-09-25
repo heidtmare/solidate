@@ -12,6 +12,9 @@ pub enum AppError {
     /// Precondition (`If-Match`) failed. `current` is the head's content hash.
     #[error("precondition failed")]
     PreconditionFailed { current: Option<Hash> },
+    /// The token's request rate limit is exhausted.
+    #[error("rate limit exceeded; retry in {retry_after_secs} s")]
+    RateLimited { retry_after_secs: u64 },
     #[error("already exists: {0}")]
     AlreadyExists(String),
     #[error("invalid: {0}")]

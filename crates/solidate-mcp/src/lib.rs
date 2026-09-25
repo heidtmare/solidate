@@ -54,7 +54,10 @@ fn fail(e: AppError) -> ToolResult {
         AppError::PreconditionFailed { current: None } => {
             "precondition failed: the document variant already exists or was removed; re-read and retry.".to_owned()
         }
-        AppError::Internal(_) => "internal error".to_owned(),
+        AppError::Internal(m) => {
+            tracing::error!(error = %m, "mcp tool internal error");
+            "internal error".to_owned()
+        }
         e => e.to_string(),
     };
     Ok(CallToolResult::error(vec![ContentBlock::text(msg)]))

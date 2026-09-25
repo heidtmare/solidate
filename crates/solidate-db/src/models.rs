@@ -184,6 +184,22 @@ pub struct TokenCredentials {
     pub revoked_at: Option<OffsetDateTime>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
+pub struct AuditEntry {
+    pub id: AuditId,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+    /// `user`, `token` or `system`.
+    pub actor_kind: String,
+    pub actor_user_id: Option<UserId>,
+    pub actor_token_id: Option<TokenId>,
+    pub action: String,
+    /// `None` for tenant-wide actions and for projects that no longer exist.
+    pub project_slug: Option<String>,
+    pub target: Option<String>,
+    pub detail: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct SessionRecord {
     #[sqlx(flatten)]

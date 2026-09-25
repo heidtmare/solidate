@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use solidate_app::core::{DocPath, Variant, analyze};
 use solidate_app::db::Expect;
 use solidate_app::{App, AppError, Ctx, PutDoc};
+use time::format_description::well_known::Rfc3339;
 
 const INSTRUCTIONS: &str = "Solidate stores project design documents. Each document has a human variant (narrative) \
 and an AI variant (dense, structured), paired by section anchors. Read with read_doc; write with write_doc, passing \
@@ -413,7 +414,7 @@ impl SolidateMcp {
             .map(|r| {
                 json!({
                     "revision": r.id.to_string(), "content_hash": r.content_hash,
-                    "message": r.message, "created_at": r.created_at,
+                    "message": r.message, "created_at": r.created_at.format(&Rfc3339).ok(),
                 })
             })
             .collect();

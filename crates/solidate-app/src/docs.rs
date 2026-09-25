@@ -85,6 +85,7 @@ pub struct TreeEntry {
     pub sync_enabled: bool,
     pub human: Option<Hash>,
     pub ai: Option<Hash>,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 

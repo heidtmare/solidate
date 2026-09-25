@@ -70,6 +70,7 @@ struct DocOut<'a> {
     /// Content hash combined with included content; present with `expand=1`.
     #[serde(skip_serializing_if = "Option::is_none")]
     resolved_hash: Option<Hash>,
+    #[serde(with = "time::serde::rfc3339")]
     updated_at: OffsetDateTime,
     sections: Vec<SectionOut<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -309,6 +310,7 @@ struct RevisionOut {
     /// `user`, `token`, or `system`.
     author: &'static str,
     message: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
 }
 

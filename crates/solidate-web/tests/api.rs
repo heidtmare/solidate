@@ -171,6 +171,11 @@ async fn documents_etags_and_inheritance(pool: PgPoolOptions, opts: PgConnectOpt
     let r = api.req("GET", "/api/v1/projects/shared/docs/rules", &[], None).await;
     assert_eq!((r.status, r.etag.as_deref()), (StatusCode::OK, Some(v1.as_str())));
     assert_eq!(r.json()["sections"][0]["anchor"], "rules");
+    assert!(
+        r.json()["updated_at"]
+            .as_str()
+            .is_some_and(|t| t.contains('T') && t.ends_with('Z'))
+    );
     let r = api
         .req(
             "GET",
@@ -238,6 +243,11 @@ async fn documents_etags_and_inheritance(pool: PgPoolOptions, opts: PgConnectOpt
     assert_eq!(hist.as_array().unwrap().len(), 2);
     assert_eq!(hist[0]["message"], "tighten");
 
+    assert!(
+        hist[0]["created_at"]
+            .as_str()
+            .is_some_and(|t| t.contains('T') && t.ends_with('Z'))
+    );
     // Includes expand; the resolved hash is the ETag.
     let r = api
         .req(

@@ -11,6 +11,7 @@ pub struct Tenant {
     pub id: TenantId,
     pub slug: String,
     pub name: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -46,6 +47,7 @@ pub struct Project {
     pub name: String,
     pub parent_id: Option<ProjectId>,
     pub settings: serde_json::Value,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -56,7 +58,9 @@ pub struct Document {
     pub path: String,
     pub title: Option<String>,
     pub sync_enabled: bool,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -69,6 +73,7 @@ pub struct DocumentSummary {
     pub sync_enabled: bool,
     pub human_hash: Option<Hash>,
     pub ai_hash: Option<Hash>,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -80,6 +85,7 @@ pub struct Head {
     pub content_hash: Hash,
     pub title: Option<String>,
     pub content: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -94,6 +100,7 @@ pub struct Revision {
     pub author_user_id: Option<UserId>,
     pub author_token_id: Option<TokenId>,
     pub message: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -166,9 +173,13 @@ pub struct ApiToken {
     pub scopes: Vec<Scope>,
     pub project_id: Option<ProjectId>,
     pub created_by: Option<UserId>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub last_used_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
     pub revoked_at: Option<OffsetDateTime>,
 }
 

@@ -40,3 +40,19 @@ Base URL `http://localhost:3000/t/heidtmare/p/solidate`.
 Suggested recording: open the sync queue, accept the quickstart proposal, then
 write the missing `diagrams` section from the sync item and watch the queue
 shrink. Re-run `./seed.sh` to reset.
+
+## Recording
+
+`recording/record.js` drives Chromium through the suggested recording and
+writes a WebM with captions and a visible cursor: sign-in, project home, readme
+in both variants, the sync queue, conflict details, accepting the staged agent
+proposal, translating `diagrams` by hand, a human readme edit that an agent then
+translates over REST, an agent proposal in the AI-to-human direction, history,
+search and `llms.txt`. It changes state, so run `./seed.sh` first.
+
+```sh
+cd recording && npm i playwright
+../seed.sh  # with SOLIDATE_TOKEN set to the docs-agent token
+SOLIDATE_TOKEN=sol_... PW=<password> node record.js   # logs in as demo@solidate.dev
+ffmpeg -i video/*.webm -c:v libx264 -crf 20 -pix_fmt yuv420p -movflags +faststart solidate-walkthrough.mp4
+```

@@ -149,7 +149,8 @@ tr.detail td { border-bottom: none; padding: 0; }
 .editor .actions { margin-top: 0.8rem; }
 
 pre.diff, pre.source { background: var(--soft); padding: 0.6rem; border-radius: var(--radius); overflow-x: auto; white-space: pre-wrap; }
-pre.diff span { display: block; }
+pre.diff { white-space: normal; }
+pre.diff span { display: block; white-space: pre-wrap; }
 pre.diff .add { background: var(--add); color: var(--add-fg); }
 pre.diff .del { background: var(--del); color: var(--del-fg); }
 pre.diff .hunk { color: var(--muted); }

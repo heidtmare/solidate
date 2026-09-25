@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+solidate-core = { path = "crates/solidate-core" }
+
+blake3 = "1"
+comrak = { version = "0.55", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+proptest = "1"

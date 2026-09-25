@@ -1,0 +1,17 @@
+[package]
+name = "solidate-core"
+description = "Pure domain logic for Solidate: markdown analysis, hashing, links, includes, sync state."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+blake3.workspace = true
+comrak.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

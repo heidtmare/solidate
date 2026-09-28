@@ -58,6 +58,14 @@ with the failing line highlighted. In the editor preview the last version that
 rendered stays below the error, and a note next to **Save** lists the document
 line of each error; selecting one selects that line in the editor.
 
+Diagrams use the app's colours and follow the system's light or dark setting.
+Pointing at a diagram shows its tools: **Expand** opens it full size with zoom
+(`+`, `-`, `0` for actual size, `f` to fit, or Ctrl and the scroll wheel),
+**Source** switches between the picture and the fence, **Copy** copies the
+source, and **SVG** downloads it. Screen readers announce a diagram by its
+section title; to give it a better name and a description, add `accTitle:` and
+`accDescr:` lines to the fence.
+
 ## Where you see it {#where}
 
 The document page shows a **Sync** button with the number of sections a person

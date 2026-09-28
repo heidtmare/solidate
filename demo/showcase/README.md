@@ -70,3 +70,16 @@ ffmpeg -i solidate-walkthrough.mp4 -filter_complex "\
 ```
 
 The trim points follow the current recording; re-check them after re-recording.
+
+`recording/diagrams.js` records the diagram features in dark mode for the root
+README's diagrams GIF: typing a Mermaid fence in the editor, an inline error and
+its fix, then the toolbar and zoom dialog on the saved page. It adds a
+`pipeline` section to `architecture/hashing`, so run `./seed.sh` first.
+
+```sh
+PW=<password> node diagrams.js   # logs in as demo@solidate.dev; BASE and EMAIL override
+ffmpeg -i video-diagrams/*.webm -filter_complex "\
+[0:v]trim=start=0.6,setpts=(PTS-STARTPTS)/1.4,fps=8,scale=800:-1:flags=lanczos,split[x][y];\
+[x]palettegen=max_colors=48:stats_mode=diff[p];[y][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle" \
+  -loop 0 solidate-diagrams.gif
+```

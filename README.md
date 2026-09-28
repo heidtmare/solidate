@@ -11,13 +11,19 @@ Solidate pairs the two variants section by section, hashes each section, and sho
 [`demo/showcase/recording/solidate-walkthrough.mp4`](demo/showcase/recording/solidate-walkthrough.mp4) covers sign-in, the project home, a document in both variants, the sync queue, conflict details, accepting an agent proposal, translating a section by hand, an agent translating over REST, history, search and `llms.txt`.
 It is recorded against the showcase data in [demo/showcase](demo/showcase/README.md), which is Solidate's own documentation stored in Solidate.
 
+### Diagrams
+
+![Writing and viewing a Mermaid diagram in dark mode](demo/showcase/recording/solidate-diagrams.gif)
+
+A Mermaid fence renders in the editor preview as it is typed. Errors show inline with the failing line highlighted and the last version that rendered, and the note next to **Save** selects that line. Rendered diagrams follow the light or dark theme and have a toolbar to expand with zoom, show the source, copy it, or download an SVG.
+
 ## Features
 
 - **Server-rendered UI.** HTML rendered on the server with Topcoat; htmx for the few interactive parts, no client-side framework.
 - **Dual variants.** Each document has a human (`x.md`) and AI (`x.ai.md`) variant, paired by section anchor.
 - **Section-level edits.** Agents replace, insert or delete one section (`write_section`, `PATCH`) guarded by that section's hash, so concurrent edits elsewhere in the document don't conflict.
 - **Section-level sync.** A queue of stale sections, side-by-side diffs, conflict detection, and one-click resolution for formatting-only changes. A document with one variant is outside sync until its second variant is written, and the web UI counts only the sections a person must act on.
-- **Shared diagrams.** Mermaid fences are shared by both variants: editing one never marks the other variant stale, and edits to the human variant's diagram carry over to an identical copy in the AI variant.
+- **Shared diagrams.** Mermaid fences are shared by both variants: editing one never marks the other variant stale, and edits to the human variant's diagram carry over to an identical copy in the AI variant. Inline error reporting in the editor preview; themed rendering with expand, zoom, source, copy and SVG download.
 - **Agent translation with review.** Agents submit translations as proposals; a person accepts or rejects them.
 - **Project inheritance.** Child projects inherit documents (shared glossary, style rules, translation guide) and can override any of them.
 - **Transclusion and links.** `{{include project:doc#section}}` directives, `[[wiki links]]`, backlinks.

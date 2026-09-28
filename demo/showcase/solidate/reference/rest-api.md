@@ -38,8 +38,9 @@ decision flow.
 
 | Method and path | Purpose |
 |---|---|
-| `GET /projects/{p}/docs/{path}` | Read a variant (`?variant=`, `?section=`, `?expand=1`, `?format=md`) |
+| `GET /projects/{p}/docs/{path}` | Read a variant (`?variant=`, `?section=`, `?subsections=1`, `?expand=1`, `?format=md`) |
 | `PUT /projects/{p}/docs/{path}` | Write a variant |
+| `PATCH /projects/{p}/docs/{path}` | Replace, delete or insert one section |
 | `DELETE /projects/{p}/docs/{path}` | Delete both variants of an owned document |
 | `GET /projects/{p}/history/{path}` | Revisions of a variant, newest first |
 | `GET /projects/{p}/revisions/{rev}/{path}` | One revision and its diff from the parent |
@@ -57,6 +58,18 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 
 The response reports the new content hash, whether anything changed, and which
 sections of the document still need sync.
+
+`PATCH` changes a single section and leaves the rest of the variant byte for
+byte. Its JSON body names the target with `anchor` (replace; empty `content`
+deletes), `after` (insert after that section and its subsections) or neither
+(append), plus `content`, `subsections`, `message` and `resolves`. For a
+replacement, send the section's `hash` from `GET ?section=` as `section_hash`,
+and the write fails with `412` only if that section changed. An `If-Match`
+header works too, but fails on a change anywhere in the variant. Replacing
+without either is refused with `428`. An edit that would shift the anchor of
+another section, such as an unclosed code fence, is refused with `400`. The
+response adds `anchors`, the sections written. [[reference/mcp#section-edits]]
+covers the same operation for agents.
 
 ## Projects, search and indexes {#projects}
 

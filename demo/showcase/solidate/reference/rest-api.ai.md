@@ -42,8 +42,9 @@ curl -H "Authorization: Bearer $SOLIDATE_TOKEN" http://localhost:3000/api/v1
 
 | method | path | notes |
 |---|---|---|
-| GET | `/projects/{p}/docs/{path}` | `variant=human\|ai`, `section=<anchor>`, `expand=1`, `format=md\|json` (or `Accept: text/markdown`) |
+| GET | `/projects/{p}/docs/{path}` | `variant=human\|ai`, `section=<anchor>`, `subsections=1`, `expand=1`, `format=md\|json` (or `Accept: text/markdown`) |
 | PUT | `/projects/{p}/docs/{path}` | body `text/markdown` (+ `message`, `resolves=a,b` query) or JSON `{content, message?, resolves?}` |
+| PATCH | `/projects/{p}/docs/{path}` | one section; JSON `{anchor? \| after?, subsections?, content, section_hash?, message?, resolves?}`; `variant` query |
 | DELETE | `/projects/{p}/docs/{path}` | both variants; owned docs only; 204 |
 | GET | `/projects/{p}/history/{path}` | `variant`; newest first |
 | GET | `/projects/{p}/revisions/{rev}/{path}` | content + diff from parent |
@@ -57,6 +58,10 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 ```
 
 - PUT response: `{path, variant, content_hash, revision, changed, sync: [{anchor, state}]}`.
+- PATCH targets: `anchor` -> replace (empty `content` deletes); `after` -> insert after section + subsections; neither -> append.
+- PATCH precondition: `section_hash` (the `hash` from `GET ?section=`, same `subsections`, no `expand`) -> 412 only if that span changed; or `If-Match` (whole variant). Replace without either -> 428; inserts need none.
+- PATCH rejects (400): another section's anchor would change (unclosed fence, duplicate heading); inserted text without leading heading.
+- PATCH response: PUT response + `anchors` (sections written). Agent equivalent: [[reference/mcp#section-edits]].
 - max body: 1 MiB per variant. `\r\n` normalized to `\n`.
 
 ## Projects, search and indexes {#projects}

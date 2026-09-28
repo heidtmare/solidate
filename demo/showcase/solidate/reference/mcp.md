@@ -38,8 +38,9 @@ translation workflow, so the agent does not need a custom prompt.
 | `project_hash` | Merkle root; unchanged means nothing changed |
 | `project_index` | The `llms.txt` index |
 | `search` | Full-text search |
-| `read_doc` | Read a variant or one section, with its content hash and outline |
+| `read_doc` | Read a variant or one section (optionally with its subsections), with its content hash and outline |
 | `write_doc` | Write a variant; `base_hash` required except on create |
+| `write_section` | Replace, delete or insert one section without resending the rest |
 | `backlinks` | Documents linking to a document |
 | `doc_history` | Revisions of a variant |
 | `get_sync_queue` | Sections awaiting translation |
@@ -52,6 +53,29 @@ translation workflow, so the agent does not need a custom prompt.
 | `get_drift_queue` | Sections whose source files changed since verification |
 | `affected_sections` | Sections that describe the given repository paths |
 | `verify_sources` | Confirm sections still match their source files |
+
+## Editing one section {#section-edits}
+
+`write_section` lets an agent change part of a long document without resending
+the whole of it. To replace a section, the agent reads it with
+`read_doc(section=anchor)` and sends back only the new Markdown, heading
+included, along with the section's `hash` as `section_hash`. The write then
+fails only if that section changed in the meantime; edits to other sections do
+not conflict. Passing the document's `content_hash` as `base_hash` instead
+makes the write fail on any change. Setting `subsections` covers the section and
+the deeper headings under it, for both the read and the write. Empty content
+deletes the section.
+
+To add a section, the agent passes `after` with an anchor, which inserts the new
+section after that section and its subsections, or omits both `anchor` and
+`after` to append. Inserted text must start with a heading, so it cannot run on
+into the section before it.
+
+The rest of the document is kept byte for byte. The server rejects an edit that
+would change the anchor of any other section, as an unclosed code fence or a
+duplicate heading would. The response lists the anchors that were written, and
+keeping the heading text (or an explicit `{#anchor}`) keeps the section paired
+with its translation. `resolves` works as it does for `write_doc`.
 
 ## Errors {#errors}
 

@@ -1,9 +1,10 @@
 //! Document reads and writes, history, revisions, and backlinks.
 
 use serde::{Deserialize, Serialize};
-use solidate_app::core::{Hash, Variant, analyze};
+use solidate_app::core::edit::span_hash;
+use solidate_app::core::{Hash, SectionTarget, Variant, analyze};
 use solidate_app::db::Expect;
-use solidate_app::{AppError, PutDoc};
+use solidate_app::{AppError, PutDoc, PutSection};
 use time::OffsetDateTime;
 use topcoat::Result;
 use topcoat::context::Cx;
@@ -12,8 +13,8 @@ use topcoat::router::response::Response;
 use topcoat::router::{Body, StatusCode, path_param_segment, query_params, route};
 
 use super::{
-    ApiError, ApiResult, api_ctx, doc_path, finish, json, not_modified, parse_variant, text, wants_markdown, with_etag,
-    write_precondition,
+    ApiError, ApiResult, api_ctx, doc_path, finish, json, not_modified, optional_write_precondition, parse_variant,
+    text, wants_markdown, with_etag, write_precondition,
 };
 use crate::auth::app;
 
@@ -22,6 +23,8 @@ struct DocQuery {
     variant: Option<String>,
     /// Return only this section (anchor).
     section: Option<String>,
+    /// `1` with `section`: include its subsections.
+    subsections: Option<String>,
     /// `1`: expand `{{include}}` directives. The ETag becomes the resolved hash.
     expand: Option<String>,
     /// `md` for raw Markdown, `json` for JSON. Default: from `Accept`.
@@ -115,8 +118,14 @@ async fn get_inner(cx: &Cx) -> ApiResult {
                 format!("no section #{anchor}"),
             )
         })?;
+        let subsections = q.subsections.as_deref() == Some("1");
+        let body = match subsections {
+            true => analysis.section_tree_source(anchor).unwrap_or_default(),
+            false => s.body.clone(),
+        };
+        let hash = span_hash(&analysis, SectionTarget::Section { anchor, subsections }).unwrap_or(s.hash);
         let res = if markdown {
-            text("text/markdown; charset=utf-8", s.body.clone())
+            text("text/markdown; charset=utf-8", body)
         } else {
             json(
                 StatusCode::OK,
@@ -125,8 +134,8 @@ async fn get_inner(cx: &Cx) -> ApiResult {
                     title: &s.title,
                     level: s.level,
                     parent: s.parent.as_deref(),
-                    hash: s.hash,
-                    body: Some(&s.body),
+                    hash,
+                    body: Some(&body),
                 },
             )
         };
@@ -279,6 +288,107 @@ async fn put_inner(cx: &Cx, body: String) -> ApiResult {
         },
     );
     Ok(with_etag(res, Some(r.revision.content_hash)))
+}
+
+#[derive(Deserialize)]
+struct PatchBody {
+    /// Section to replace; empty `content` deletes it.
+    anchor: Option<String>,
+    /// Instead of `anchor`: insert after this section and its subsections. Neither
+    /// appends at the end.
+    after: Option<String>,
+    #[serde(default)]
+    subsections: bool,
+    content: String,
+    /// The target section's `hash` as last read.
+    section_hash: Option<Hash>,
+    message: Option<String>,
+    #[serde(default)]
+    resolves: Vec<String>,
+}
+
+/// Replaces, deletes or inserts one section of a variant. JSON body
+/// `{anchor? | after?, subsections?, content, section_hash?, message?, resolves?}`.
+/// Replacing requires `section_hash` or `If-Match`; insertions accept either but
+/// need neither.
+#[route(PATCH "/api/v1/projects/{project}/docs/{*path}")]
+async fn api_patch(cx: &Cx, body: String) -> Result<Response> {
+    finish(patch_inner(cx, body).await)
+}
+
+async fn patch_inner(cx: &Cx, body: String) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let (project, path, q) = (path_param_segment(cx, "project"), doc_path(cx)?, doc_query(cx)?);
+    let variant = parse_variant(q.variant.as_deref())?;
+    let req = serde_json::from_str::<PatchBody>(&body)
+        .map_err(|e| ApiError::bad_request(format!("invalid JSON body: {e}")))?;
+    let target = match (req.anchor.as_deref(), req.after.as_deref()) {
+        (Some(anchor), None) => SectionTarget::Section {
+            anchor,
+            subsections: req.subsections,
+        },
+        (None, Some(after)) => SectionTarget::After(after),
+        (None, None) => SectionTarget::End,
+        (Some(_), Some(_)) => return Err(ApiError::bad_request("use either anchor or after")),
+    };
+    let precondition = optional_write_precondition(cx)?;
+    if matches!(target, SectionTarget::Section { .. }) && precondition.is_none() && req.section_hash.is_none() {
+        return Err(ApiError::new(
+            StatusCode::PRECONDITION_REQUIRED,
+            "precondition_required",
+            "replacing a section requires section_hash or If-Match",
+        ));
+    }
+    let content = req.content.replace("\r\n", "\n");
+    let r = app(cx)
+        .put_section(
+            &ctx,
+            PutSection {
+                project,
+                path: &path,
+                variant,
+                target,
+                content: &content,
+                expect: precondition.unwrap_or(Expect::Any),
+                section_hash: req.section_hash,
+                message: req.message.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+                resolves: &req.resolves,
+            },
+        )
+        .await?;
+    #[derive(Serialize)]
+    struct Out<'a> {
+        path: &'a str,
+        variant: Variant,
+        content_hash: Hash,
+        revision: String,
+        changed: bool,
+        /// Anchors of the sections written.
+        anchors: &'a [String],
+        sync: Vec<SyncOut<'a>>,
+    }
+    let res = json(
+        StatusCode::OK,
+        &Out {
+            path: &r.put.document.path,
+            variant,
+            content_hash: r.put.revision.content_hash,
+            revision: r.put.revision.id.to_string(),
+            changed: r.put.created,
+            anchors: &r.anchors,
+            sync: r
+                .put
+                .sync
+                .iter()
+                .filter(|s| s.state.needs_attention())
+                .map(|s| SyncOut {
+                    anchor: &s.anchor,
+                    state: s.state,
+                })
+                .collect(),
+        },
+    );
+    Ok(with_etag(res, Some(r.put.revision.content_hash)))
 }
 
 /// Deletes both variants of a document owned by the project.

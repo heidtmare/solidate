@@ -497,6 +497,95 @@ async fn drift_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(r.status, StatusCode::FORBIDDEN);
 }
 
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn section_writes(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, router, rw, _) = setup(pool, opts).await;
+    let api = Api {
+        router: router.clone(),
+        auth: rw.clone(),
+    };
+    let uri = "/api/v1/projects/app/docs/guide";
+    let doc = "# Guide\n\nIntro.\n\n## Install\n\nOld steps.\n\n## Usage\n\nRun it.\n";
+    let r = api.req("PUT", uri, &[("if-none-match", "*")], Some(doc)).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+
+    let sec = api
+        .req("GET", &format!("{uri}?section=install"), &[], None)
+        .await
+        .json();
+    let hash = sec["hash"].as_str().unwrap().to_owned();
+    let patch = |body: Value| body.to_string();
+
+    // Replacing needs a precondition.
+    let body = patch(serde_json::json!({ "anchor": "install", "content": "## Install\n\nNew." }));
+    let r = api
+        .req("PATCH", uri, &[("content-type", "application/json")], Some(&body))
+        .await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED);
+
+    // An edit elsewhere does not invalidate the section hash.
+    let body = patch(serde_json::json!({ "after": "guide", "content": "## FAQ\n\nNone yet." }));
+    let r = api.req("PATCH", uri, &[], Some(&body)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.json()["anchors"][0], "faq");
+
+    let body = patch(serde_json::json!({
+        "anchor": "install", "content": "## Install\n\nNew steps.", "section_hash": hash,
+    }));
+    let r = api.req("PATCH", uri, &[], Some(&body)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let md = api.req("GET", &format!("{uri}?format=md"), &[], None).await.body;
+    assert_eq!(
+        md,
+        "# Guide\n\nIntro.\n\n## Install\n\nNew steps.\n\n## Usage\n\nRun it.\n\n## FAQ\n\nNone yet.\n"
+    );
+    assert_eq!(
+        r.etag.as_deref(),
+        Some(format!("\"{}\"", solidate_app::core::Hash::of(&md).to_hex()).as_str())
+    );
+
+    // The stale hash now fails.
+    let r = api.req("PATCH", uri, &[], Some(&body)).await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+    // Unsafe splices are rejected.
+    let body = patch(serde_json::json!({ "anchor": "usage", "content": "## Usage\n\n```\nopen" }));
+    let r = api.req("PATCH", uri, &[("if-match", "*")], Some(&body)).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.body);
+
+    // MCP: read a section with subsections, then replace it.
+    let (err, out) = tool(
+        &router,
+        &rw,
+        "read_doc",
+        serde_json::json!({ "project": "app", "path": "guide", "section": "guide", "subsections": true }),
+    )
+    .await;
+    assert!(!err, "{out}");
+    let read: Value = serde_json::from_str(&out).unwrap();
+    assert!(read["content"].as_str().unwrap().contains("None yet."));
+    let (err, out) = tool(
+        &router,
+        &rw,
+        "write_section",
+        serde_json::json!({
+            "project": "app", "path": "guide", "anchor": "guide", "subsections": true,
+            "content": "# Guide\n\nRewritten.\n", "section_hash": read["hash"],
+        }),
+    )
+    .await;
+    assert!(!err, "{out}");
+    let w: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(w["anchors"], serde_json::json!(["guide"]));
+    let (err, out) = tool(
+        &router,
+        &rw,
+        "write_section",
+        serde_json::json!({ "project": "app", "path": "guide", "anchor": "guide", "content": "" }),
+    )
+    .await;
+    assert!(err && out.contains("section_hash or base_hash"), "{out}");
+}
+
 async fn mcp(r: &Router, auth: &str, body: &str) -> Reply {
     call(
         r,
@@ -550,6 +639,7 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
     for n in [
         "read_doc",
         "write_doc",
+        "write_section",
         "get_sync_queue",
         "get_sync_item",
         "resolve_sync",

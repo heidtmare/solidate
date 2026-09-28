@@ -15,6 +15,7 @@ It is recorded against the showcase data in [demo/showcase](demo/showcase/README
 
 - **Server-rendered UI.** HTML rendered on the server with Topcoat; htmx for the few interactive parts, no client-side framework.
 - **Dual variants.** Each document has a human (`x.md`) and AI (`x.ai.md`) variant, paired by section anchor.
+- **Section-level edits.** Agents replace, insert or delete one section (`write_section`, `PATCH`) guarded by that section's hash, so concurrent edits elsewhere in the document don't conflict.
 - **Section-level sync.** A queue of stale sections, side-by-side diffs, conflict detection, and one-click resolution for formatting-only changes.
 - **Agent translation with review.** Agents submit translations as proposals; a person accepts or rejects them.
 - **Project inheritance.** Child projects inherit documents (shared glossary, style rules, translation guide) and can override any of them.

@@ -673,6 +673,49 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
         assert!(names.contains(&n), "missing tool {n}");
     }
 
+    let prompts = mcp(&router, &rw, r#"{"jsonrpc":"2.0","id":1,"method":"prompts/list"}"#)
+        .await
+        .json();
+    let prompts = prompts["result"]["prompts"].as_array().unwrap();
+    for n in ["translate-queue", "fix-drift", "document-change"] {
+        assert!(prompts.iter().any(|p| p["name"] == n), "missing prompt {n}");
+    }
+    let get = |name: &str, args: Value| {
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "prompts/get",
+            "params": { "name": name, "arguments": args },
+        })
+        .to_string()
+    };
+    let r = mcp(
+        &router,
+        &rw,
+        &get(
+            "document-change",
+            serde_json::json!({"project": "app", "paths": "src/auth.rs, src/db.rs"}),
+        ),
+    )
+    .await
+    .json();
+    let text = r["result"]["messages"][0]["content"]["text"].as_str().unwrap();
+    assert!(text.contains(r#"paths=["src/auth.rs","src/db.rs"]"#), "{text}");
+    let r = mcp(
+        &router,
+        &rw,
+        &get("document-change", serde_json::json!({"project": "app", "paths": " , "})),
+    )
+    .await;
+    assert!(r.json()["error"].is_object(), "{}", r.body);
+    let r = mcp(
+        &router,
+        &rw,
+        &get("translate-queue", serde_json::json!({"project": "app", "limit": "3"})),
+    )
+    .await
+    .json();
+    let text = r["result"]["messages"][0]["content"]["text"].as_str().unwrap();
+    assert!(text.contains("at most 3 sections"), "{text}");
+
     // Host validation (DNS rebinding protection).
     let r = call(
         &router,

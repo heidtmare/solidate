@@ -655,3 +655,234 @@ async fn tokens_are_rate_limited(pool: PgPoolOptions, opts: PgConnectOptions) {
     let wrong = format!("{}_{}", a.token.prefix, "0".repeat(64));
     assert!(matches!(app.token_ctx(&wrong).await, Err(AppError::Unauthorized)));
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn source_drift_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
+    use solidate_app::SourceReport;
+    use solidate_app::core::sources::{DriftState, Files};
+
+    let (app, ctx) = setup(pool, opts).await;
+    let files = |e: &[(&str, &str)]| -> Files { e.iter().map(|(p, h)| (p.to_string(), h.to_string())).collect() };
+    let report = |f: Files, removed: Vec<String>, replace: bool, rev: &'static str| {
+        let (app, ctx) = (&app, &ctx);
+        async move {
+            app.report_sources(
+                ctx,
+                "app",
+                SourceReport {
+                    revision: Some(rev),
+                    files: &f,
+                    removed: &removed,
+                    replace,
+                },
+            )
+            .await
+        }
+    };
+    let queue = || async { app.drift_queue(&ctx, "app").await.unwrap() };
+    let verify = |anchors: &[&str], rev: Option<&str>| {
+        let anchors: Vec<String> = anchors.iter().map(|s| s.to_string()).collect();
+        let rev = rev.map(str::to_owned);
+        let (app, ctx) = (&app, &ctx);
+        async move {
+            app.verify_sources(ctx, "app", &path("design/auth"), &anchors, rev.as_deref())
+                .await
+        }
+    };
+
+    let human = "# Auth {#auth}\n\nOpaque tokens.\n\n<!-- sources: src/auth.rs, src/db/ -->\n\n# Other\n\nx.\n";
+    let ai = "# Auth {#auth}\n\nOpaque tokens.\n\n# Other\n\nx.\n";
+    let h = put(
+        &app,
+        &ctx,
+        "app",
+        "design/auth",
+        Variant::Human,
+        human,
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    put(&app, &ctx, "app", "design/auth", Variant::Ai, ai, Expect::Absent, &[])
+        .await
+        .unwrap();
+    assert!(
+        app.sync_queue(&ctx, "app").await.unwrap().is_empty(),
+        "directives are not content"
+    );
+
+    // Adding the binding to the AI variant too does not affect sync.
+    let a = put(
+        &app,
+        &ctx,
+        "app",
+        "design/auth",
+        Variant::Ai,
+        "# Auth {#auth}\n\n<!-- sources: src/auth.rs -->\n\nOpaque tokens.\n\n# Other\n\nx.\n",
+        Expect::Any,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(a.sync.iter().all(|s| s.state == SyncState::InSync));
+
+    // Nothing reported: unverified, every pattern missing.
+    let q = queue().await;
+    assert_eq!((q.revision.as_deref(), q.reported_at), (None, None));
+    assert_eq!(q.entries.len(), 1);
+    let e = &q.entries[0];
+    assert_eq!((e.anchor.as_str(), e.state), ("auth", DriftState::Unverified));
+    assert_eq!(e.section_title, "Auth");
+    assert_eq!(e.patterns, ["src/auth.rs", "src/db/"]);
+    assert_eq!(e.missing, ["src/auth.rs", "src/db/"]);
+    assert!(matches!(verify(&["auth"], None).await, Err(AppError::Invalid(_))));
+
+    // Reverse lookup needs no report.
+    let hit = app
+        .affected_sections(&ctx, "app", &["src/db/x.sql".into(), "README.md".into()])
+        .await
+        .unwrap();
+    assert_eq!(hit.len(), 1);
+    assert_eq!(
+        (hit[0].anchor.as_str(), hit[0].paths.clone()),
+        ("auth", vec!["src/db/x.sql".to_owned()])
+    );
+
+    let s = report(
+        files(&[("src/auth.rs", "a1"), ("src/db/x.sql", "x1"), ("README.md", "r1")]),
+        vec![],
+        true,
+        "r1",
+    )
+    .await
+    .unwrap();
+    assert_eq!((s.files, s.revision.as_deref()), (3, Some("r1")));
+    let q = queue().await;
+    assert_eq!(q.revision.as_deref(), Some("r1"));
+    assert_eq!(q.entries[0].state, DriftState::Unverified);
+    assert!(q.entries[0].missing.is_empty());
+
+    assert!(matches!(verify(&["auth"], Some("r0")).await, Err(AppError::Invalid(_))));
+    assert!(matches!(verify(&["other"], None).await, Err(AppError::Invalid(_))));
+    let d = verify(&["auth"], Some("r1")).await.unwrap();
+    assert_eq!(d[0].state, DriftState::Fresh);
+    assert_eq!(d[0].verified_revision.as_deref(), Some("r1"));
+    assert!(queue().await.entries.is_empty());
+
+    // An unrelated file changing leaves the section fresh.
+    report(files(&[("README.md", "r2")]), vec![], false, "r2")
+        .await
+        .unwrap();
+    assert!(queue().await.entries.is_empty());
+
+    report(
+        files(&[("src/auth.rs", "a2"), ("src/db/y.sql", "y1")]),
+        vec![],
+        false,
+        "r3",
+    )
+    .await
+    .unwrap();
+    let e = queue().await.entries.remove(0);
+    assert_eq!(e.state, DriftState::Changed);
+    assert_eq!(e.delta.changed, ["src/auth.rs"]);
+    assert_eq!(e.delta.added, ["src/db/y.sql"]);
+    assert!(e.delta.removed.is_empty());
+    assert_eq!(e.verified_revision.as_deref(), Some("r1"));
+
+    let s = report(Files::new(), vec!["src/auth.rs".into()], false, "r4")
+        .await
+        .unwrap();
+    assert_eq!(s.files, 3);
+    let e = queue().await.entries.remove(0);
+    assert_eq!(e.delta.removed, ["src/auth.rs"]);
+    assert_eq!(e.missing, ["src/auth.rs"]);
+
+    // Verified with a missing pattern: fresh, but still listed until the pattern is fixed.
+    let d = verify(&["auth"], None).await.unwrap();
+    assert_eq!(d[0].state, DriftState::Fresh);
+    assert_eq!(queue().await.entries.len(), 1);
+
+    // Invalid inputs.
+    let bad = put(
+        &app,
+        &ctx,
+        "app",
+        "design/bad",
+        Variant::Human,
+        "# X\n\n<!-- sources: ../etc/passwd -->\n",
+        Expect::Absent,
+        &[],
+    )
+    .await;
+    assert!(matches!(bad, Err(AppError::Invalid(_))), "{bad:?}");
+    let bad = report(files(&[("/abs", "h")]), vec![], false, "r5").await;
+    assert!(matches!(bad, Err(AppError::Invalid(_))));
+    let bad = report(Files::new(), vec!["x".into()], true, "r5").await;
+    assert!(matches!(bad, Err(AppError::Invalid(_))));
+
+    // Dropping the bindings from both variants drops the verification record.
+    put(
+        &app,
+        &ctx,
+        "app",
+        "design/auth",
+        Variant::Human,
+        ai,
+        Expect::Head(h.revision.content_hash),
+        &[],
+    )
+    .await
+    .unwrap();
+    put(
+        &app,
+        &ctx,
+        "app",
+        "design/auth",
+        Variant::Ai,
+        ai,
+        Expect::Head(a.revision.content_hash),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(queue().await.entries.is_empty());
+    put(
+        &app,
+        &ctx,
+        "app",
+        "design/auth",
+        Variant::Human,
+        human,
+        Expect::Any,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(queue().await.entries[0].state, DriftState::Unverified);
+
+    // Read-only callers cannot report or verify.
+    let ro = app
+        .create_api_token(&ctx, "ro", &[Scope::Read], None, None)
+        .await
+        .unwrap();
+    let ro = app
+        .authenticate(solidate_app::Credential::Bearer(&ro.secret))
+        .await
+        .unwrap();
+    let denied = app
+        .report_sources(
+            &ro,
+            "app",
+            SourceReport {
+                revision: None,
+                files: &Files::new(),
+                removed: &[],
+                replace: false,
+            },
+        )
+        .await;
+    assert!(matches!(denied, Err(AppError::Forbidden)));
+    assert!(app.drift_queue(&ro, "app").await.is_ok());
+}

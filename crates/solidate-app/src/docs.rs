@@ -15,6 +15,7 @@ use crate::audit::record;
 use crate::ctx::{Access, Ctx};
 use crate::error::{AppError, Result, invalid};
 use crate::projects::project_by_slug;
+use crate::sources::{prune_verifications, validate_bindings};
 use crate::sync::{doc_plan, reconcile_anchors};
 
 /// A document as seen from `project`. `owner` differs from `project` when the
@@ -158,6 +159,8 @@ impl App {
         if req.content.len() > self.config.max_doc_bytes {
             return Err(invalid(format!("document exceeds {} bytes", self.config.max_doc_bytes)));
         }
+        let analysis = analyze(req.content, Some(req.path));
+        validate_bindings(&analysis.sources)?;
         let tx = &mut *tx;
         let p = project_by_slug(tx, req.project).await?;
         ctx.require(Access::Write, Some(&p))?;
@@ -184,7 +187,6 @@ impl App {
         let first_translation = tx.head(document.id, req.variant).await?.is_none()
             && tx.head(document.id, req.variant.other()).await?.is_some();
 
-        let analysis = analyze(req.content, Some(req.path));
         let (revision, created) = tx
             .write_revision(NewRevision {
                 document: document.id,
@@ -199,6 +201,7 @@ impl App {
 
         if created {
             tx.delete_variant_proposal(document.id, req.variant).await?;
+            prune_verifications(tx, document.id, req.variant, &analysis.sources).await?;
         }
         let sync = if document.sync_enabled {
             let mut plan = doc_plan(tx, document.id).await?.plan;

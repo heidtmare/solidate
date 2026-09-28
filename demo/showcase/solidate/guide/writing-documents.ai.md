@@ -38,6 +38,10 @@ Format: GitHub-flavored Markdown. Covers Solidate-specific semantics. Style rule
 - cycle / missing / depth exceeded: rendered notice (`> **Missing include:** ...`), no error.
 - resolved hash = Merkle(content hash, dependency hashes) -> upstream change changes it.
 
+## Source bindings {#sources}
+
+- `<!-- sources: p1, p2 -->` on its own lines binds the enclosing section to repo files; not rendered; excluded from semantic hashes. See [[guide/code-drift]].
+
 ## Other Markdown features {#markdown}
 
 - enabled: tables, task lists, strikethrough, autolinks, footnotes, wiki links.

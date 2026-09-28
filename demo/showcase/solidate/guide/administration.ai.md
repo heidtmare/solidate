@@ -60,8 +60,12 @@ solidate export acme docs ./backup
 
 ```sh
 solidate sync-queue acme docs
+solidate sources report acme docs --dir ~/src/docs-repo
+solidate drift acme docs
 solidate audit acme --limit 20
 ```
 
 - `sync-queue` output: `path#anchor\tstate\tstale=<side|both>`.
+- `sources report`: `git ls-files -s -z` in `--dir`, revision `--revision` or `git rev-parse HEAD`; complete tree (`replace`). Needs `git` on PATH.
+- `drift` output: `path#anchor\tstate\tsince=<verified revision|->\tchanged=… added=… removed=… missing=…`. See [[guide/code-drift]].
 - `audit` output (TSV, newest first): `id at actor action project target detail`; paging `--before <id>`; default limit 50.

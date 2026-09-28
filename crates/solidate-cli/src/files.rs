@@ -1,9 +1,12 @@
 //! Mapping between Markdown files on disk and document variants.
 //!
 //! `dir/name.md` is the human variant of `dir/name`; `dir/name.ai.md` is its AI variant.
+//! Also parses `git ls-files` output for source reports.
 
 use std::path::{Path, PathBuf};
 
+use anyhow::{Result, anyhow};
+use solidate_app::core::sources::Files;
 use solidate_app::core::{DocPath, Variant};
 
 /// Maps a file path relative to the import root. Returns `None` for non-Markdown
@@ -26,9 +29,35 @@ pub fn file_for_doc(root: &Path, path: &DocPath, variant: Variant) -> PathBuf {
     root.join(format!("{path}{suffix}"))
 }
 
+/// Path → blob id from `git ls-files -s -z` output (`<mode> <blob> <stage>\t<path>\0`).
+pub fn git_files(out: &str) -> Result<Files> {
+    out.split('\0')
+        .filter(|e| !e.is_empty())
+        .map(|e| {
+            let (meta, path) = e
+                .split_once('\t')
+                .ok_or_else(|| anyhow!("unexpected git ls-files entry {e:?}"))?;
+            let blob = meta
+                .split(' ')
+                .nth(1)
+                .ok_or_else(|| anyhow!("unexpected git ls-files entry {e:?}"))?;
+            Ok((path.to_owned(), blob.to_owned()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_git_ls_files() {
+        let out = "100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0\tREADME.md\x00100755 3b18e512dba79e4c8300dd08aeb37f8e728b8dad 0\tsrc/a b.rs\0";
+        let f = git_files(out).unwrap();
+        assert_eq!(f["README.md"], "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+        assert_eq!(f["src/a b.rs"], "3b18e512dba79e4c8300dd08aeb37f8e728b8dad");
+        assert!(git_files("garbage\0").is_err());
+    }
 
     #[test]
     fn mapping_round_trips() {

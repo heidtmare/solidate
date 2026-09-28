@@ -84,6 +84,18 @@ sections of the document still need sync.
 Accepting a proposal is deliberately a web-only action, so a person makes that
 call. See [[guide/agents-and-translation]].
 
+## Source drift {#drift}
+
+| Method and path | Purpose |
+|---|---|
+| `POST /projects/{p}/sources` | Report repository file hashes |
+| `GET /projects/{p}/drift` | Bound sections whose sources drifted |
+| `GET /projects/{p}/drift/{path}` | Drift status of every bound section of a document |
+| `POST /projects/{p}/affected` | Sections that describe the given paths |
+| `POST /projects/{p}/verify/{path}` | Confirm sections still match their sources |
+
+See [[guide/code-drift]] for the workflow.
+
 ## Audit {#audit}
 
 `GET /audit` lists the tenant's audit log, newest first. It requires the `admin`

@@ -421,6 +421,82 @@ async fn sync_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
     assert_eq!(ps, serde_json::json!([]));
 }
 
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn drift_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, router, rw, ro) = setup(pool, opts).await;
+    let api = Api { router, auth: rw };
+    let doc = "# Auth\n\n<!-- sources: src/auth.rs -->\n\nOpaque tokens.\n";
+    let r = api
+        .req(
+            "PUT",
+            "/api/v1/projects/app/docs/auth",
+            &[("content-type", "text/markdown"), ("if-none-match", "*")],
+            Some(doc),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+
+    let body = r#"{"revision": "c1", "files": {"src/auth.rs": "a1", "README.md": "r1"}, "replace": true}"#;
+    let r = api.req("POST", "/api/v1/projects/app/sources", &[], Some(body)).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.json()["files"], 2);
+
+    let q = api.req("GET", "/api/v1/projects/app/drift", &[], None).await.json();
+    assert_eq!(q["revision"], "c1");
+    assert_eq!(q["entries"][0]["anchor"], "auth");
+    assert_eq!(q["entries"][0]["state"], "unverified");
+
+    let r = api
+        .req(
+            "POST",
+            "/api/v1/projects/app/affected",
+            &[],
+            Some(r#"{"paths": ["src/auth.rs"]}"#),
+        )
+        .await
+        .json();
+    assert_eq!(r[0]["paths"][0], "src/auth.rs");
+
+    let r = api
+        .req(
+            "POST",
+            "/api/v1/projects/app/verify/auth",
+            &[],
+            Some(r#"{"anchors": ["auth"], "revision": "c1"}"#),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.json()[0]["state"], "fresh");
+
+    let body = r#"{"revision": "c2", "files": {"src/auth.rs": "a2"}}"#;
+    api.req("POST", "/api/v1/projects/app/sources", &[], Some(body)).await;
+    let d = api
+        .req("GET", "/api/v1/projects/app/drift/auth", &[], None)
+        .await
+        .json();
+    assert_eq!(d[0]["state"], "changed");
+    assert_eq!(d[0]["changed"][0], "src/auth.rs");
+    assert_eq!(d[0]["verified_revision"], "c1");
+
+    let r = api
+        .req(
+            "POST",
+            "/api/v1/projects/app/sources",
+            &[],
+            Some(r#"{"files": {"/x": "h"}}"#),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    let ro = Api {
+        router: api.router,
+        auth: ro,
+    };
+    let r = ro
+        .req("POST", "/api/v1/projects/shared/sources", &[], Some(r#"{"files": {}}"#))
+        .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
 async fn mcp(r: &Router, auth: &str, body: &str) -> Reply {
     call(
         r,
@@ -481,6 +557,10 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
         "propose_translation",
         "list_proposals",
         "search",
+        "report_sources",
+        "get_drift_queue",
+        "affected_sections",
+        "verify_sources",
     ] {
         assert!(names.contains(&n), "missing tool {n}");
     }

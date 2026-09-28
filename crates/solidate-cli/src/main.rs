@@ -10,7 +10,7 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use solidate_app::core::{DocPath, Role, Scope, Slug, Variant};
 use solidate_app::db::{Db, Expect};
-use solidate_app::{App, Config, Ctx, PutDoc, telemetry};
+use solidate_app::{App, Config, Ctx, PutDoc, SourceReport, telemetry};
 use time::{Duration, OffsetDateTime};
 
 #[derive(Parser)]
@@ -54,6 +54,10 @@ enum Cmd {
     },
     /// List sections needing sync in a project.
     SyncQueue { tenant: String, project: String },
+    #[command(subcommand)]
+    Sources(SourcesCmd),
+    /// List sections whose source files drifted since verification.
+    Drift { tenant: String, project: String },
     /// Print a tenant's audit log, newest first (tab-separated).
     Audit {
         tenant: String,
@@ -101,6 +105,20 @@ enum ProjectCmd {
         slug: String,
         /// Omit to make the project a root.
         parent: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SourcesCmd {
+    /// Report the files of a git checkout (`git ls-files -s`) as the project's
+    /// complete source tree, at revision `HEAD` unless given.
+    Report {
+        tenant: String,
+        project: String,
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+        #[arg(long)]
+        revision: Option<String>,
     },
 }
 
@@ -265,6 +283,60 @@ async fn run(app: &App, cmd: Cmd) -> Result<()> {
                 println!("{}#{}\t{}\tstale={side}", e.path, e.anchor, e.state);
             }
         }
+        Cmd::Sources(SourcesCmd::Report {
+            tenant,
+            project,
+            dir,
+            revision,
+        }) => {
+            let ctx = app.system_ctx(&tenant).await?;
+            let files = files::git_files(&git(&dir, &["ls-files", "-s", "-z"])?)?;
+            let revision = match revision {
+                Some(r) => r,
+                None => git(&dir, &["rev-parse", "HEAD"])?.trim().to_owned(),
+            };
+            let s = app
+                .report_sources(
+                    &ctx,
+                    &project,
+                    SourceReport {
+                        revision: Some(&revision),
+                        files: &files,
+                        removed: &[],
+                        replace: true,
+                    },
+                )
+                .await?;
+            println!("{} files reported at {revision}", s.files);
+        }
+        Cmd::Drift { tenant, project } => {
+            let ctx = app.system_ctx(&tenant).await?;
+            let q = app.drift_queue(&ctx, &project).await?;
+            if q.reported_at.is_none() {
+                eprintln!("no source files reported for {project}");
+            }
+            for e in q.entries {
+                let mut notes = Vec::new();
+                for (label, paths) in [
+                    ("changed", &e.delta.changed),
+                    ("added", &e.delta.added),
+                    ("removed", &e.delta.removed),
+                    ("missing", &e.missing),
+                ] {
+                    if !paths.is_empty() {
+                        notes.push(format!("{label}={}", paths.join(",")));
+                    }
+                }
+                let since = e.verified_revision.as_deref().unwrap_or("-");
+                println!(
+                    "{}#{}\t{}\tsince={since}\t{}",
+                    e.path,
+                    e.anchor,
+                    e.state,
+                    notes.join(" ")
+                );
+            }
+        }
         Cmd::Audit { tenant, limit, before } => {
             let ctx = app.system_ctx(&tenant).await?;
             let before = before
@@ -290,6 +362,23 @@ async fn run(app: &App, cmd: Cmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .context("running git")?;
+    if !out.status.success() {
+        return Err(anyhow!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8(out.stdout)?)
 }
 
 async fn import(app: &App, ctx: &Ctx, project: &str, dir: &Path, dry_run: bool, synced: bool) -> Result<()> {

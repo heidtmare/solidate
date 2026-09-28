@@ -48,6 +48,10 @@ translation workflow, so the agent does not need a custom prompt.
 | `get_translation_guide` | How the variants differ in this project |
 | `propose_translation` | Submit a translation for review |
 | `list_proposals` | Open proposals, with diffs |
+| `report_sources` | Report repository file hashes for drift tracking |
+| `get_drift_queue` | Sections whose source files changed since verification |
+| `affected_sections` | Sections that describe the given repository paths |
+| `verify_sources` | Confirm sections still match their source files |
 
 ## Errors {#errors}
 

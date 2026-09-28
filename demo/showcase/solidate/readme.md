@@ -34,6 +34,8 @@ or explicitly marked in sync. The reasoning is recorded in
 - **Transclusion and links.** `{{include}}` directives, wiki links, backlinks.
 - **Content hashing.** BLAKE3 content hashes as ETags, semantic hashes for sync,
   and a Merkle root per project.
+- **Doc↔code drift.** Sections name the source files they describe, and a queue
+  lists sections whose files changed since someone last confirmed them.
 - **APIs for tools.** A REST API, an MCP server, and an `llms.txt` index.
 - **Multi-tenant by construction.** PostgreSQL row-level security isolates tenants.
 
@@ -49,6 +51,7 @@ The terms below come from the tenant-wide glossary in the parent project
 - New here: [[guide/quickstart]], then [[guide/writing-documents]].
 - Understanding sync: [[guide/variants-and-sync]] and
   [[guide/agents-and-translation]].
+- Keeping docs in step with code: [[guide/code-drift]].
 - Running it: [[guide/administration]] and [[reference/configuration]].
 - Integrating: [[reference/rest-api]] and [[reference/mcp]].
 - How it is built: [[architecture/overview]].

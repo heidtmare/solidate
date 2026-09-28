@@ -49,7 +49,9 @@ not in the sync queue; get_untranslated lists them, and proposing the missing va
 Diagram fences (```mermaid) are shared by both variants, not translated: copy them verbatim. Editing a \
 diagram's contents does not mark the other variant stale, and a human-variant edit is carried over to an \
 identical copy in the AI variant automatically (write responses then return followed_ai_hash, the AI \
-variant's new content_hash). Adding or removing a diagram is a change to translate.\n\n\
+variant's new content_hash). Adding or removing a diagram is a change to translate. Diagrams whose contents \
+differ between variants are listed in diagram_drift of the document sync status; a person chooses which version to \
+keep, so do not rewrite one variant's diagram to match the other.\n\n\
 Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.\n\n\
 Sections can declare the repository files they describe with an HTML comment on its own lines, \
 `<!-- sources: path/file.rs, dir/, src/**/*.sql -->` (paths relative to the repository root). Before changing code, \

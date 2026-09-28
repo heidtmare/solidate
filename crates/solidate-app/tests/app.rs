@@ -312,6 +312,10 @@ async fn diagram_edits_follow_without_sync_debt(pool: PgPoolOptions, opts: PgCon
     assert!(r.sync.iter().all(|s| s.state == SyncState::InSync), "{:?}", r.sync);
     let ai2 = ai.replace("C-->A", "C-->G-->A");
     assert_eq!(r.followed, Some(Hash::of(&ai2)));
+    assert_eq!(
+        (r.diagrams_carried, r.diagrams_skipped),
+        (vec!["flow".to_owned()], vec![])
+    );
     let head = app
         .get_doc(&ctx, "app", &path("flow"), Variant::Ai)
         .await
@@ -347,7 +351,55 @@ async fn diagram_edits_follow_without_sync_debt(pool: PgPoolOptions, opts: PgCon
     .await
     .unwrap();
     assert_eq!(r.followed, None);
+    assert_eq!(
+        (r.diagrams_carried, r.diagrams_skipped),
+        (vec![], vec!["flow".to_owned()])
+    );
     assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+
+    // The diverged copy is reported as drift, and copying the diagram clears it
+    // without touching sync.
+    let s = app.doc_sync(&ctx, "app", &path("flow")).await.unwrap();
+    assert_eq!(
+        s.diagram_drift
+            .iter()
+            .map(|d| (d.anchor.as_str(), d.index))
+            .collect::<Vec<_>>(),
+        [("flow", 0)]
+    );
+    let listed = app.diagram_drift(&ctx, "app").await.unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|d| (d.path.as_str(), d.anchor.as_str()))
+            .collect::<Vec<_>>(),
+        [("flow", "flow")]
+    );
+    let hash = app
+        .copy_diagram(&ctx, "app", &path("flow"), "flow", 0, Variant::Human)
+        .await
+        .unwrap();
+    let head = app
+        .get_doc(&ctx, "app", &path("flow"), Variant::Ai)
+        .await
+        .unwrap()
+        .head
+        .unwrap();
+    assert_eq!(head.content_hash, hash);
+    assert_eq!(head.content, ai2.replace("G-->A", "G-->B"));
+    assert!(
+        app.doc_sync(&ctx, "app", &path("flow"))
+            .await
+            .unwrap()
+            .diagram_drift
+            .is_empty()
+    );
+    assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+    assert!(matches!(
+        app.copy_diagram(&ctx, "app", &path("flow"), "flow", 0, Variant::Human)
+            .await,
+        Err(AppError::Invalid(_))
+    ));
 
     // Adding a diagram is a change the AI variant must pick up.
     let human3 = format!("{}\n{}", human2.replace("G-->A", "G-->B"), fence("X-->Y"));

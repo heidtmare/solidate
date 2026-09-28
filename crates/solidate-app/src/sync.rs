@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use serde_json::json;
+use solidate_core::diagram::{Drift, drift};
 use solidate_core::diff::unified;
 use solidate_core::sync::{SectionSync, plan, reconcile};
 use solidate_core::{DocPath, Hash, SyncState, Variant, analyze};
@@ -85,6 +86,25 @@ pub struct DocSync {
     pub human_hash: Option<Hash>,
     pub ai_hash: Option<Hash>,
     pub sections: Vec<SectionStatus>,
+    /// Diagrams whose contents differ between the variants. Sync ignores diagram
+    /// contents, so these are not stale sections. Empty when sync is disabled.
+    pub diagram_drift: Vec<Drift>,
+}
+
+/// A diagram whose contents differ between a document's variants.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DiagramDrift {
+    pub path: String,
+    pub document_title: Option<String>,
+    pub anchor: String,
+    pub index: usize,
+}
+
+fn plan_drift(document: &Document, p: &Plan) -> Vec<Drift> {
+    match (&p.human, &p.ai) {
+        (Some(h), Some(a)) if document.sync_enabled => drift(&h.content, &a.content),
+        _ => Vec::new(),
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -191,6 +211,7 @@ impl App {
         Ok(DocSync {
             human_hash: p.human.as_ref().map(|h| h.content_hash),
             ai_hash: p.ai.as_ref().map(|h| h.content_hash),
+            diagram_drift: plan_drift(&document, &p),
             document,
             sections,
         })
@@ -217,6 +238,27 @@ impl App {
                     proposal: proposals.get(&s.anchor).copied(),
                 });
             }
+        }
+        Ok(out)
+    }
+
+    /// Diagrams that differ between the variants of `project`'s own sync-enabled
+    /// documents.
+    pub async fn diagram_drift(&self, ctx: &Ctx, project: &str) -> Result<Vec<DiagramDrift>> {
+        let mut tx = self.tx(ctx).await?;
+        let p = project_by_slug(&mut tx, project).await?;
+        ctx.require(Access::Read, Some(&p))?;
+        let mut out = Vec::new();
+        for d in tx.documents(p.id).await?.into_iter().filter(|d| d.sync_enabled) {
+            let (Some(h), Some(a)) = (tx.head(d.id, Variant::Human).await?, tx.head(d.id, Variant::Ai).await?) else {
+                continue;
+            };
+            out.extend(drift(&h.content, &a.content).into_iter().map(|x| DiagramDrift {
+                path: d.path.clone(),
+                document_title: d.title.clone(),
+                anchor: x.anchor,
+                index: x.index,
+            }));
         }
         Ok(out)
     }

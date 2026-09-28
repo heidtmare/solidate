@@ -13,7 +13,10 @@ use topcoat::view::{View, component, view};
 
 use crate::auth::{app, require_user, tenant_ctx};
 use crate::error::{OrHttp, http};
-use crate::ui::{Trusted, action_url, diff_html, doc_url, fmt_time, link_href, parse_variant, project_url, tenant_url};
+use crate::ui::{
+    Trusted, action_url, diagram_notices, diff_html, doc_url, fmt_time, link_href, parse_variant, project_url,
+    tenant_url, with_diagram_report,
+};
 
 fn doc_path(cx: &Cx) -> Result<DocPath> {
     let joined = path_param_segments(cx, "path").collect::<Vec<_>>().join("/");
@@ -25,6 +28,9 @@ struct VariantQuery {
     v: Option<String>,
     /// Section anchor the edit propagates; saving marks it in sync.
     resolves: Option<String>,
+    /// Anchors reported by [`with_diagram_report`] after a save.
+    carried: Option<String>,
+    skipped: Option<String>,
 }
 
 fn variant(cx: &Cx) -> Variant {
@@ -83,9 +89,26 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
         .filter(|x| x.state.needs_attention())
         .map(|x| (x.anchor.clone(), x.state))
         .collect();
+    let drift = sync.as_ref().map(|s| s.diagram_drift.clone()).unwrap_or_default();
+    let mut drifted: Vec<String> = drift.iter().map(|d| d.anchor.clone()).collect();
+    drifted.dedup();
     let (p, ps) = (project.to_owned(), path.as_str().to_owned());
     let title = r.view.document.title.clone().unwrap_or_else(|| ps.clone());
     let head = r.view.head.clone();
+    let sync_url = format!("{}/sync/{ps}", project_url(&t, &p));
+    let q = query_params::<VariantQuery>(cx).ok();
+    let notices = diagram_notices(
+        q.as_ref().and_then(|q| q.carried.as_deref()),
+        q.as_ref().and_then(|q| q.skipped.as_deref()),
+        &sync_url,
+    );
+    let drift_titles: Vec<(String, String)> = drifted
+        .iter()
+        .map(|a| {
+            let title = r.outline.iter().find(|o| &o.anchor == a).map_or(a, |o| &o.title);
+            (a.clone(), title.clone())
+        })
+        .collect();
 
     Ok(view! {
         crumbs(tenant: t.clone(), tenant_name: ctx.tenant.name.clone(), project: p.clone(), path: Some(ps.clone()))
@@ -97,12 +120,13 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
                 </a>
                 <a class="button secondary" href=(action_url(&t, &p, "history", &ps, v))>"History"</a>
                 if sync.is_some() {
-                    <a class="button secondary" href=(format!("{}/sync/{ps}", project_url(&t, &p)))>
+                    <a class="button secondary" href=(sync_url.clone())>
                         "Sync " <span class=(if stale > 0 { "count warn" } else { "count" })>(stale)</span>
                     </a>
                 }
             </div>
         </div>
+        (notices)
         <div class="tabs">
             <a href=(doc_url(&t, &p, &ps, Variant::Human)) class=(if v == Variant::Human { "tab active" } else { "tab" })>"Human"</a>
             <a href=(doc_url(&t, &p, &ps, Variant::Ai)) class=(if v == Variant::Ai { "tab active" } else { "tab" })>"AI"</a>
@@ -133,9 +157,22 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
                                     Some(st) => <span class=(dot_class(*st)) title=(dot_title(*st))></span>,
                                     None => "",
                                 }
+                                if drifted.contains(&o.anchor) {
+                                    <span class="dot diagram" title="a diagram differs from the other variant"></span>
+                                }
                             </li>
                         }
                     </ul>
+                }
+                if !drifted.is_empty() {
+                    <h2>"Diagrams differ"</h2>
+                    <p class="small muted">"The human and AI variants hold different versions of these diagrams."</p>
+                    <ul class="plain small">
+                        for (a, title) in &drift_titles {
+                            <li><a href=(format!("#{a}"))>(title.clone())</a></li>
+                        }
+                    </ul>
+                    <p class="small"><a href=(format!("{sync_url}#diagrams"))>"Choose versions"</a></p>
                 }
                 if !backlinks.is_empty() {
                     <h2>"Linked from"</h2>
@@ -338,8 +375,14 @@ async fn edit_submit(cx: &Cx, Form(form): Form<EditForm>) -> Result<impl View> {
         )
         .await;
     match result {
-        Ok(_) if !resolves.is_empty() => Err(see_other(format!("{}/sync/{ps}", project_url(&t, &p))).into()),
-        Ok(_) => Err(see_other(doc_url(&t, &p, &ps, v)).into()),
+        Ok(r) => {
+            let to = if resolves.is_empty() {
+                doc_url(&t, &p, &ps, v)
+            } else {
+                format!("{}/sync/{ps}", project_url(&t, &p))
+            };
+            Err(see_other(with_diagram_report(to, &r.diagrams_carried, &r.diagrams_skipped)).into())
+        }
         Err(AppError::PreconditionFailed { current }) => Ok(view! {
             (StatusCode::CONFLICT)
             crumbs(tenant: t.clone(), tenant_name: ctx.tenant.name.clone(), project: p.clone(), path: Some(ps.clone()))

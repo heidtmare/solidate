@@ -18,7 +18,7 @@ use crate::ctx::{Access, Ctx};
 use crate::error::{AppError, Result, invalid};
 use crate::projects::project_by_slug;
 use crate::sources::{prune_verifications, validate_bindings};
-use crate::sync::{doc_plan, reconcile_anchors};
+use crate::sync::{doc_plan, own_doc, reconcile_anchors};
 
 /// A document as seen from `project`. `owner` differs from `project` when the
 /// document is inherited from an ancestor.
@@ -60,6 +60,11 @@ pub struct PutResult {
     /// Content hash of the AI revision written to carry this write's diagram edits
     /// over (see [`solidate_core::diagram::follow`]).
     pub followed: Option<Hash>,
+    /// Anchors of sections whose diagram edits were carried into the AI variant.
+    pub diagrams_carried: Vec<String>,
+    /// Anchors of sections with an edited diagram that were not carried over because
+    /// the AI variant's copy differs.
+    pub diagrams_skipped: Vec<String>,
 }
 
 /// A write of one section of a variant; see [`App::put_section`].
@@ -233,12 +238,12 @@ impl App {
             tx.delete_variant_proposal(document.id, req.variant).await?;
             prune_verifications(tx, document.id, req.variant, &analysis.sources).await?;
         }
-        let followed = match &previous {
+        let (followed, follow) = match &previous {
             Some(prev) if created && document.sync_enabled && req.variant == Variant::Human => {
                 self.follow_diagrams(tx, ctx, &document, req.path, &prev.content, req.content)
                     .await?
             }
-            _ => None,
+            _ => (None, diagram::Follow::default()),
         };
         let sync = if document.sync_enabled {
             let mut plan = doc_plan(tx, document.id).await?.plan;
@@ -277,13 +282,16 @@ impl App {
             created,
             sync,
             followed,
+            diagrams_carried: follow.carried,
+            diagrams_skipped: follow.skipped,
         })
     }
 
     /// Writes the AI variant with the diagram edits of a human-variant write from
     /// `old` to `new` carried over. Returns the new AI content hash, or `None` when
-    /// the AI variant holds no identical copy of an edited diagram. Diagram contents
-    /// are not part of sync hashes, so sync state is unchanged.
+    /// the AI variant holds no identical copy of an edited diagram, and which sections
+    /// were carried over or skipped. Diagram contents are not part of sync hashes, so
+    /// sync state is unchanged.
     async fn follow_diagrams(
         &self,
         tx: &mut TenantTx,
@@ -292,34 +300,65 @@ impl App {
         path: &DocPath,
         old: &str,
         new: &str,
-    ) -> Result<Option<Hash>> {
+    ) -> Result<(Option<Hash>, diagram::Follow)> {
         let Some(ai) = tx.head(document.id, Variant::Ai).await? else {
-            return Ok(None);
+            return Ok((None, diagram::Follow::default()));
         };
-        let Some(content) = diagram::follow(old, new, &ai.content) else {
-            return Ok(None);
+        let mut follow = diagram::follow(old, new, &ai.content);
+        let Some(content) = follow.content.take() else {
+            return Ok((None, follow));
         };
         if content.len() > self.config.max_doc_bytes {
-            return Ok(None);
+            follow.skipped.append(&mut follow.carried);
+            return Ok((None, follow));
         }
-        let analysis = analyze(&content, Some(path));
+        let hash = self
+            .write_diagrams(
+                tx,
+                ctx,
+                document,
+                path,
+                &ai,
+                &content,
+                "Carry over diagram changes from the human variant",
+                Variant::Human,
+            )
+            .await?;
+        Ok((Some(hash), follow))
+    }
+
+    /// Writes `content`, which differs from `head` in diagram contents only, as the
+    /// new head of `head`'s variant. `from` is the variant the diagrams came from.
+    #[allow(clippy::too_many_arguments)]
+    async fn write_diagrams(
+        &self,
+        tx: &mut TenantTx,
+        ctx: &Ctx,
+        document: &Document,
+        path: &DocPath,
+        head: &Head,
+        content: &str,
+        message: &str,
+        from: Variant,
+    ) -> Result<Hash> {
+        let analysis = analyze(content, Some(path));
         let (revision, created) = tx
             .write_revision(NewRevision {
                 document: document.id,
-                variant: Variant::Ai,
-                content: &content,
+                variant: head.variant,
+                content,
                 analysis: &analysis,
                 author: ctx.author(),
-                message: Some("Carry over diagram changes from the human variant"),
-                expect: Expect::Head(ai.content_hash),
+                message: Some(message),
+                expect: Expect::Head(head.content_hash),
             })
             .await?;
         let detail = json!({
-            "variant": Variant::Ai,
+            "variant": head.variant,
             "revision": revision.id,
             "content_hash": revision.content_hash,
             "changed": created,
-            "follows": Variant::Human,
+            "follows": from,
         });
         record(
             tx,
@@ -330,7 +369,40 @@ impl App {
             detail,
         )
         .await?;
-        Ok(Some(revision.content_hash))
+        Ok(revision.content_hash)
+    }
+
+    /// Makes diagram `index` of section `anchor` in the `from.other()` variant match
+    /// the paired diagram in `from` (see [`diagram::drift`]). Returns the new content
+    /// hash of the written variant. Sync state is unchanged.
+    pub async fn copy_diagram(
+        &self,
+        ctx: &Ctx,
+        project: &str,
+        path: &DocPath,
+        anchor: &str,
+        index: usize,
+        from: Variant,
+    ) -> Result<Hash> {
+        let mut tx = self.tx(ctx).await?;
+        let document = own_doc(&mut tx, ctx, project, path, Access::Write).await?;
+        let (Some(src), Some(dst)) = (
+            tx.head(document.id, from).await?,
+            tx.head(document.id, from.other()).await?,
+        ) else {
+            return Err(AppError::NotFound);
+        };
+        let content = diagram::copy(&src.content, &dst.content, anchor, index)
+            .ok_or_else(|| invalid(format!("no differing diagram {index} in section {anchor:?}")))?;
+        if content.len() > self.config.max_doc_bytes {
+            return Err(invalid(format!("document exceeds {} bytes", self.config.max_doc_bytes)));
+        }
+        let message = format!("Copy diagram from the {from} variant");
+        let hash = self
+            .write_diagrams(&mut tx, ctx, &document, path, &dst, &content, &message, from)
+            .await?;
+        tx.commit().await?;
+        Ok(hash)
     }
 
     /// Replaces, deletes or inserts one section of a variant, leaving the rest of its

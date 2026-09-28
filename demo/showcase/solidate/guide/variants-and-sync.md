@@ -47,6 +47,12 @@ section of the AI variant holds an identical copy of the old diagram, Solidate
 updates that copy in the same write. Adding or removing a diagram still counts
 as a change, so the other variant picks it up through the usual queue.
 
+After saving, the document page says which diagram edits were applied to the AI
+variant and which were not because its copy differs. Diagrams whose contents
+differ between the variants are marked with a square in the table of contents
+and listed under **Diagrams that differ** on the Sync pages, drawn side by side.
+Choose **Use in AI variant** or **Use in human variant** to make both match.
+
 ## Where you see it {#where}
 
 The document page shows a **Sync** button with the number of sections a person

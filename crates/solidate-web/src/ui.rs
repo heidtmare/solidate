@@ -86,6 +86,49 @@ pub fn fmt_time(t: OffsetDateTime) -> String {
     )
 }
 
+/// `url` with `carried` and `skipped` query parameters naming the sections whose
+/// diagram edits a write carried into the AI variant or left alone. See
+/// [`diagram_notices`].
+pub fn with_diagram_report(mut url: String, carried: &[String], skipped: &[String]) -> String {
+    for (key, anchors) in [("carried", carried), ("skipped", skipped)] {
+        if anchors.is_empty() {
+            continue;
+        }
+        let sep = if url.contains('?') { '&' } else { '?' };
+        let value = anchors.iter().map(|a| enc(a)).collect::<Vec<_>>().join(",");
+        url = format!("{url}{sep}{key}={value}");
+    }
+    url
+}
+
+/// Notices for the `carried` and `skipped` parameters of [`with_diagram_report`].
+/// `sync_url` is the document's translation page, where differing diagrams are
+/// reviewed.
+pub fn diagram_notices(carried: Option<&str>, skipped: Option<&str>, sync_url: &str) -> Trusted {
+    let list = |v: Option<&str>| -> Option<String> {
+        let anchors: Vec<String> = v?
+            .split(',')
+            .filter(|a| !a.is_empty())
+            .map(|a| format!("<code>#{}</code>", escape(a)))
+            .collect();
+        (!anchors.is_empty()).then(|| anchors.join(", "))
+    };
+    let mut out = String::new();
+    if let Some(a) = list(carried) {
+        out.push_str(&format!(
+            "<p class=\"notice ok\">Diagram changes in {a} were also applied to the AI variant.</p>"
+        ));
+    }
+    if let Some(a) = list(skipped) {
+        out.push_str(&format!(
+            "<p class=\"notice\">Diagram changes in {a} were not applied to the AI variant because its copy \
+             differs. <a href=\"{}\">Choose a version</a>.</p>",
+            escape(sync_url)
+        ));
+    }
+    Trusted(out)
+}
+
 /// Unified diff as HTML lines with `add`/`del`/`hunk` classes.
 pub fn diff_html(diff: &str) -> Trusted {
     let mut out = String::from("<pre class=\"diff\">");

@@ -4,6 +4,7 @@
 //! present in both variants.
 
 use serde::Deserialize;
+use solidate_app::core::diff::unified;
 use solidate_app::core::{DocPath, SyncState, Variant};
 use solidate_app::db::ProposalId;
 use solidate_app::{GUIDE_PATH, ProposalRef, QueueEntry};
@@ -16,7 +17,10 @@ use topcoat::view::{View, component, view};
 
 use crate::auth::{app, tenant_ctx};
 use crate::error::OrHttp;
-use crate::ui::{action_url, diff_html, doc_url, enc, escape, fmt_time, project_url, tenant_url};
+use crate::ui::{
+    Trusted, action_url, diagram_notices, diff_html, doc_url, enc, escape, fmt_time, parse_variant, project_url,
+    tenant_url,
+};
 
 fn doc_path(cx: &Cx) -> Result<DocPath> {
     let joined = path_param_segments(cx, "path").collect::<Vec<_>>().join("/");
@@ -54,6 +58,7 @@ async fn queue(cx: &Cx) -> Result<impl View> {
     let project = path_param_segment(cx, "project");
     let entries = app(cx).sync_queue(&ctx, project).await.or_http()?;
     let proposals = app(cx).project_proposals(&ctx, project).await.or_http()?;
+    let drift = app(cx).diagram_drift(&ctx, project).await.or_http()?;
     let (t, p) = (ctx.tenant.slug.clone(), project.to_owned());
     let (people, agents): (Vec<QueueEntry>, Vec<QueueEntry>) =
         entries.iter().cloned().partition(|e| e.state.needs_person());
@@ -77,6 +82,18 @@ async fn queue(cx: &Cx) -> Result<impl View> {
                         <a href=(format!("{}/sync/{}", project_url(&t, &p), pr.proposal.path))><code>(pr.proposal.path.clone())</code></a>
                         " " (format!("into {}", pr.proposal.variant))
                         if pr.outdated { " " <span class="state stale">"outdated"</span> }
+                    </li>
+                }
+            </ul>
+        }
+        if !drift.is_empty() {
+            <h2>(format!("Diagrams that differ ({})", drift.len()))</h2>
+            <p class="muted small">"The human and AI variants hold different versions of these diagrams. Sync does not track diagram contents, so they are not listed as stale."</p>
+            <ul class="plain">
+                for d in &drift {
+                    <li>
+                        <a href=(format!("{}/sync/{}#diagram-{}-{}", project_url(&t, &p), d.path, d.anchor, d.index))><code>(d.path.clone())</code></a>
+                        " " <code class="muted small">(format!("#{}", d.anchor))</code>
                     </li>
                 }
             </ul>
@@ -120,6 +137,26 @@ async fn queue_table(tenant: String, project: String, entries: Vec<QueueEntry>) 
     })
 }
 
+#[query_params]
+struct ReportQuery {
+    /// Anchors reported by [`crate::ui::with_diagram_report`] after a save.
+    carried: Option<String>,
+    skipped: Option<String>,
+}
+
+/// A diagram's source rendered for review: `mermaid` as a diagram, anything else as
+/// text.
+fn diagram_html(lang: &str, source: &str) -> Trusted {
+    if lang == "mermaid" {
+        Trusted(format!(
+            "<div class=\"markdown\"><pre class=\"mermaid\">{}</pre></div>",
+            escape(source)
+        ))
+    } else {
+        Trusted(format!("<pre class=\"source\">{}</pre>", escape(source)))
+    }
+}
+
 #[page("/t/{tenant}/p/{project}/sync/{*path}")]
 async fn doc_sync(cx: &Cx) -> Result<impl View> {
     let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
@@ -135,6 +172,27 @@ async fn doc_sync(cx: &Cx) -> Result<impl View> {
         .iter()
         .filter(|x| x.state.needs_attention() && x.in_human && x.in_ai)
         .count();
+    let q = query_params::<ReportQuery>(cx).ok();
+    let notices = diagram_notices(
+        q.as_ref().and_then(|q| q.carried.as_deref()),
+        q.as_ref().and_then(|q| q.skipped.as_deref()),
+        &format!("{base}/sync/{ps}#diagrams"),
+    );
+    // Each differing diagram with its section title and whether it shares the section.
+    let drift: Vec<_> = s
+        .diagram_drift
+        .iter()
+        .map(|d| {
+            let title = s
+                .sections
+                .iter()
+                .find(|x| x.anchor == d.anchor && !x.title.is_empty())
+                .map_or(&d.anchor, |x| &x.title)
+                .clone();
+            let shared = d.index > 0 || s.diagram_drift.iter().filter(|x| x.anchor == d.anchor).count() > 1;
+            (d.clone(), title, shared)
+        })
+        .collect();
     Ok(view! {
         <nav class="crumbs">
             <a href=(tenant_url(&t))>(ctx.tenant.name.as_str())</a>
@@ -149,6 +207,7 @@ async fn doc_sync(cx: &Cx) -> Result<impl View> {
                 <a class="button secondary" href=(action_url(&t, &p, "edit", &ps, Variant::Ai))>"Edit AI"</a>
             </div>
         </div>
+        (notices)
         <p class="muted">
             "The human and AI variants translate each other. When a section changes in one, an agent translates it into the other and proposes the result below. "
             "Use \u{201c}No translation needed\u{201d} only when a change does not alter meaning, such as a typo fix."
@@ -242,6 +301,40 @@ async fn doc_sync(cx: &Cx) -> Result<impl View> {
                 </form>
             }
         </div>
+        if !drift.is_empty() {
+            <h2 id="diagrams">(format!("Diagrams that differ ({})", drift.len()))</h2>
+            <p class="muted">
+                "Both variants share each diagram, and sync does not track what is inside one, so these differences never mark a section stale. "
+                "Choose the version both variants should use."
+            </p>
+            for (d, title, shared) in &drift {
+                <section class="drift" id=(format!("diagram-{}-{}", d.anchor, d.index))>
+                    <h3>
+                        (title.clone())
+                        " " <code class="muted small">(format!("#{}", d.anchor))</code>
+                        if *shared { (format!(", diagram {}", d.index + 1)) }
+                    </h3>
+                    <div class="sync-item">
+                        for (v, source) in [(Variant::Human, &d.human), (Variant::Ai, &d.ai)] {
+                            <div>
+                                <h4>(if v == Variant::Human { "Human" } else { "AI" })</h4>
+                                (diagram_html(&d.lang, source))
+                                <form method="post" action=(format!("{base}/copy-diagram/{ps}")) class="inline">
+                                    <input type="hidden" name="anchor" value=(d.anchor.clone())>
+                                    <input type="hidden" name="index" value=(d.index.to_string())>
+                                    <input type="hidden" name="from" value=(v.as_str())>
+                                    <button type="submit" class="secondary">(format!("Use in {} variant", v.other()))</button>
+                                </form>
+                            </div>
+                        }
+                    </div>
+                    <details>
+                        <summary class="small">"Source differences"</summary>
+                        (diff_html(&unified(&d.human, &d.ai, "human", "ai")))
+                    </details>
+                </section>
+            }
+        }
         <table class="docs">
             <thead><tr><th>"Section"</th><th>"State"</th><th></th></tr></thead>
             <tbody>
@@ -369,6 +462,36 @@ async fn resolve(cx: &Cx, Form(form): Form<ResolveForm>) -> Result<SeeOther> {
         vec![form.anchor]
     };
     app.resolve_sync(&ctx, project, &path, &anchors).await.or_http()?;
+    Ok(see_other(format!(
+        "{}/sync/{path}",
+        project_url(&ctx.tenant.slug, project)
+    )))
+}
+
+#[derive(Deserialize)]
+struct CopyDiagramForm {
+    anchor: String,
+    index: String,
+    /// Variant whose diagram both variants keep.
+    from: String,
+}
+
+#[route(POST "/t/{tenant}/p/{project}/copy-diagram/{*path}")]
+async fn copy_diagram(cx: &Cx, Form(form): Form<CopyDiagramForm>) -> Result<SeeOther> {
+    let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
+    let (project, path) = (path_param_segment(cx, "project"), doc_path(cx)?);
+    let index = form.index.parse().map_err(|_| bad_request("invalid index"))?;
+    app(cx)
+        .copy_diagram(
+            &ctx,
+            project,
+            &path,
+            &form.anchor,
+            index,
+            parse_variant(Some(&form.from)),
+        )
+        .await
+        .or_http()?;
     Ok(see_other(format!(
         "{}/sync/{path}",
         project_url(&ctx.tenant.slug, project)

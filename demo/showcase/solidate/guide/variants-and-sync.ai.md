@@ -35,7 +35,9 @@ Covers: pairing, sync states, single-variant documents, diagrams, clearing, disa
 - shared by both variants, not translated; sync hash keeps fence + info string, drops contents.
 - edit contents -> no staleness. add/remove fence -> change.
 - auto-follow: human-variant write where a diagram changed (top-level, closed, same position in a section with unchanged diagram count) and the AI section with the same anchor holds exactly one identical copy of the old contents -> AI revision written in the same transaction (message "Carry over diagram changes from the human variant"; audit `doc.write` with `follows: human`). Response `followed_ai_hash` = new AI `content_hash`.
-- not followed: AI copy diverged, missing, ambiguous; sync disabled; AI-variant edits.
+- not followed: AI copy diverged, missing, ambiguous; sync disabled; AI-variant edits. `PutResult.diagrams_carried` / `diagrams_skipped` = anchors carried / skipped (skipped: AI section has diagrams but no single identical copy); web editor redirect adds `?carried=` / `?skipped=` and the doc page shows a notice.
+- drift: diagrams at the same position in same-anchor sections with equal diagram counts and different contents. Doc sync status `diagram_drift` (`anchor`, `index`, `lang`, `human`, `ai`); project list via `App::diagram_drift`. Not a sync state.
+- resolve drift: `POST /t/{tenant}/p/{project}/copy-diagram/{path}` (`anchor`, `index`, `from`) writes the other variant with `from`'s diagram contents (message "Copy diagram from the {from} variant"; audit `doc.write`, `follows: from`). Sync unchanged. Agents do not resolve drift.
 
 ## Where you see it {#where}
 

@@ -309,6 +309,128 @@ async fn propagate_section_through_editor(pool: PgPoolOptions, opts: PgConnectOp
 }
 
 #[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn diagram_follow_notices_and_drift(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, mut c) = setup(pool, opts).await;
+    c.post(
+        "/login",
+        &[("email", "ada@acme.dev"), ("password", "long-enough-pw"), ("next", "/")],
+    )
+    .await;
+    let ctx = app.system_ctx("acme").await.unwrap();
+    let doc = DocPath::parse("flow").unwrap();
+    let fence = |edge: &str| format!("```mermaid\ngraph TD\n  {edge}\n```\n");
+    let human = format!("# Flow\n\nClient calls API.\n\n{}", fence("C-->A"));
+    for (variant, content) in [
+        (Variant::Human, human.clone()),
+        (Variant::Ai, format!("# Flow\n\n- client -> api\n\n{}", fence("C-->A"))),
+    ] {
+        app.put_doc(
+            &ctx,
+            PutDoc {
+                project: "app",
+                path: &doc,
+                variant,
+                content: &content,
+                expect: Expect::Absent,
+                message: None,
+                resolves: &[],
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    // An edit carried into the identical AI copy is reported after the redirect.
+    let human2 = human.replace("C-->A", "C-->G-->A");
+    let r = c
+        .post(
+            "/t/acme/p/app/edit/flow",
+            &[
+                ("content", &human2),
+                ("base", &Hash::of(&human).to_hex()),
+                ("message", ""),
+            ],
+        )
+        .await;
+    assert_eq!(r.location.as_deref(), Some("/t/acme/p/app/d/flow?carried=flow"));
+    let r = c.get("/t/acme/p/app/d/flow?carried=flow").await;
+    assert!(
+        r.body
+            .contains("Diagram changes in <code>#flow</code> were also applied to the AI variant."),
+        "{}",
+        r.body
+    );
+    assert!(!r.body.contains("Diagrams differ"));
+
+    // A diverged AI copy is skipped, reported, and listed as differing.
+    let ai_head = app.get_doc(&ctx, "app", &doc, Variant::Ai).await.unwrap().head.unwrap();
+    app.put_doc(
+        &ctx,
+        PutDoc {
+            project: "app",
+            path: &doc,
+            variant: Variant::Ai,
+            content: &ai_head.content.replace("G-->A", "G-->X"),
+            expect: Expect::Head(ai_head.content_hash),
+            message: None,
+            resolves: &[],
+        },
+    )
+    .await
+    .unwrap();
+    let human3 = human2.replace("G-->A", "G-->B");
+    let r = c
+        .post(
+            "/t/acme/p/app/edit/flow",
+            &[
+                ("content", &human3),
+                ("base", &Hash::of(&human2).to_hex()),
+                ("message", ""),
+            ],
+        )
+        .await;
+    assert_eq!(r.location.as_deref(), Some("/t/acme/p/app/d/flow?skipped=flow"));
+    let r = c.get("/t/acme/p/app/d/flow?skipped=flow").await;
+    assert!(
+        r.body
+            .contains("were not applied to the AI variant because its copy differs")
+    );
+    assert!(r.body.contains("Diagrams differ"));
+    assert!(r.body.contains(r#"class="dot diagram""#));
+
+    let r = c.get("/t/acme/p/app/sync").await;
+    assert!(r.body.contains("Diagrams that differ (1)"));
+    assert!(r.body.contains("All sections are in sync."));
+    let r = c.get("/t/acme/p/app/sync/flow").await;
+    assert!(r.body.contains(r#"id="diagram-flow-0""#), "{}", r.body);
+    assert!(
+        r.body
+            .contains("<pre class=\"mermaid\">graph TD\n  C--&gt;G--&gt;B\n</pre>")
+    );
+    assert!(r.body.contains("Use in ai variant"));
+
+    // Keeping the human diagram makes the AI copy match.
+    let r = c
+        .post(
+            "/t/acme/p/app/copy-diagram/flow",
+            &[("anchor", "flow"), ("index", "0"), ("from", "human")],
+        )
+        .await;
+    assert_eq!(r.location.as_deref(), Some("/t/acme/p/app/sync/flow"));
+    let ai = app.get_doc(&ctx, "app", &doc, Variant::Ai).await.unwrap().head.unwrap();
+    assert!(ai.content.contains("C-->G-->B"), "{}", ai.content);
+    let r = c.get("/t/acme/p/app/sync/flow").await;
+    assert!(!r.body.contains("Diagrams that differ"));
+    let r = c
+        .post(
+            "/t/acme/p/app/copy-diagram/flow",
+            &[("anchor", "flow"), ("index", "0"), ("from", "human")],
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
 async fn review_translation_proposal(pool: PgPoolOptions, opts: PgConnectOptions) {
     let (app, mut c) = setup(pool, opts).await;
     let sys = app.system_ctx("acme").await.unwrap();

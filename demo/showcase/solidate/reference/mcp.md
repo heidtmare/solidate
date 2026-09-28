@@ -40,11 +40,12 @@ translation workflow, so the agent does not need a custom prompt. The
 | `project_index` | The `llms.txt` index |
 | `search` | Full-text search; each hit is a section, with its anchor and hash |
 | `read_doc` | Read a variant or one section (optionally with its subsections), with its content hash and outline; the AI variant unless another is named |
-| `write_doc` | Write a variant; `base_hash` required except on create |
+| `write_doc` | Write a variant; `base_hash` required except on create. Returns `followed_ai_hash` when a diagram edit was carried into the AI variant |
 | `write_section` | Replace, delete or insert one section without resending the rest |
 | `backlinks` | Documents linking to a document |
 | `doc_history` | Revisions of a variant |
 | `get_sync_queue` | Sections awaiting translation |
+| `get_untranslated` | Documents with one variant only, and the variant missing |
 | `get_sync_item` | Everything needed to translate one section |
 | `resolve_sync` | Mark sections in sync without editing |
 | `get_translation_guide` | How the variants differ in this project |

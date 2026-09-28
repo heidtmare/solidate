@@ -13,7 +13,8 @@ Algorithm: BLAKE3, 256-bit, hex-encoded (64 chars). Two kinds + two aggregates.
 - input: `markdown_to_commonmark(section, options)` (normalized).
 - formatting-only edits (Setext vs ATX, `*` vs `_`, list markers) -> same hash.
 - soft line breaks preserved by normalization: rewrapping a paragraph -> new hash.
-- used by sync (`sections.hash`, `sync_bases`). Document-level `revisions.semantic_hash` also stored.
+- section `hash` in outlines, search hits and `section_hash` preconditions. Document-level `revisions.semantic_hash` also stored.
+- sync hash: same, with diagram fence contents blanked (fence + info string kept). Used by sync (`sections.hash`, `sync_bases`). See [[guide/variants-and-sync#diagrams]].
 
 ## Merkle roots {#merkle}
 

@@ -25,6 +25,18 @@ async fn queue_inner(cx: &Cx) -> ApiResult {
     Ok(json(StatusCode::OK, &q))
 }
 
+/// The project's own sync-enabled documents with one variant only.
+#[route(GET "/api/v1/projects/{project}/untranslated")]
+async fn api_untranslated(cx: &Cx) -> Result<Response> {
+    finish(untranslated_inner(cx).await)
+}
+
+async fn untranslated_inner(cx: &Cx) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let u = app(cx).untranslated(&ctx, path_param_segment(cx, "project")).await?;
+    Ok(json(StatusCode::OK, &u))
+}
+
 #[query_params]
 struct ItemQuery {
     anchor: Option<String>,

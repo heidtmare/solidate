@@ -6,13 +6,13 @@
 use serde::Deserialize;
 use solidate_app::core::{DocPath, SyncState, Variant};
 use solidate_app::db::ProposalId;
-use solidate_app::{GUIDE_PATH, ProposalRef};
+use solidate_app::{GUIDE_PATH, ProposalRef, QueueEntry};
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::{Form, Html};
 use topcoat::router::error::{SeeOther, bad_request, see_other};
 use topcoat::router::{page, path_param_segment, path_param_segments, query_params, route};
-use topcoat::view::{View, view};
+use topcoat::view::{View, component, view};
 
 use crate::auth::{app, tenant_ctx};
 use crate::error::OrHttp;
@@ -55,6 +55,8 @@ async fn queue(cx: &Cx) -> Result<impl View> {
     let entries = app(cx).sync_queue(&ctx, project).await.or_http()?;
     let proposals = app(cx).project_proposals(&ctx, project).await.or_http()?;
     let (t, p) = (ctx.tenant.slug.clone(), project.to_owned());
+    let (people, agents): (Vec<QueueEntry>, Vec<QueueEntry>) =
+        entries.iter().cloned().partition(|e| e.state.needs_person());
     Ok(view! {
         <nav class="crumbs">
             <a href=(tenant_url(&t))>(ctx.tenant.name.as_str())</a>
@@ -64,7 +66,8 @@ async fn queue(cx: &Cx) -> Result<impl View> {
         <h1>"Translation queue"</h1>
         <p class="muted">
             "Each document states one truth twice: a human variant and an AI variant that translate each other section by section. "
-            "These sections changed in one variant and await translation into the other. Agents translate them and submit proposals for review here."
+            "These sections changed in one variant and await translation into the other. Agents translate them and submit proposals for review here. "
+            "Documents with a human variant only are not listed until an AI variant is written."
         </p>
         if !proposals.is_empty() {
             <h2>(format!("Proposals awaiting review ({})", proposals.len()))</h2>
@@ -81,21 +84,39 @@ async fn queue(cx: &Cx) -> Result<impl View> {
         if entries.is_empty() {
             <p>"All sections are in sync."</p>
         } else {
-            <table class="docs">
-                <thead><tr><th>"Document"</th><th>"Section"</th><th>"State"</th><th>"Translate into"</th><th>"Proposal"</th></tr></thead>
-                <tbody>
-                    for e in &entries {
-                        <tr>
-                            <td><a href=(format!("{}/sync/{}", project_url(&t, &p), e.path))><code>(e.path.as_str())</code></a></td>
-                            <td>(if e.section_title.is_empty() { e.anchor.clone() } else { e.section_title.clone() })</td>
-                            <td><span class=(state_class(e.state))>(state_label(e.state))</span></td>
-                            <td>(e.stale_side.map_or("both (reconcile)", |v| v.as_str()))</td>
-                            <td>(proposal_label(e.proposal))</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
+            <h2>(format!("Needs a person ({})", people.len()))</h2>
+            if people.is_empty() {
+                <p class="muted">"Nothing to translate or reconcile by hand."</p>
+            } else {
+                queue_table(tenant: t.clone(), project: p.clone(), entries: people)
+            }
+            if !agents.is_empty() {
+                <h2>(format!("Waiting on agents ({})", agents.len()))</h2>
+                <p class="muted small">"The human variant changed; agents carry the change into the AI variant."</p>
+                queue_table(tenant: t.clone(), project: p.clone(), entries: agents)
+            }
         }
+    })
+}
+
+#[component]
+async fn queue_table(tenant: String, project: String, entries: Vec<QueueEntry>) -> Result<impl View> {
+    let base = project_url(&tenant, &project);
+    Ok(view! {
+        <table class="docs">
+            <thead><tr><th>"Document"</th><th>"Section"</th><th>"State"</th><th>"Translate into"</th><th>"Proposal"</th></tr></thead>
+            <tbody>
+                for e in &entries {
+                    <tr>
+                        <td><a href=(format!("{base}/sync/{}", e.path))><code>(e.path.as_str())</code></a></td>
+                        <td>(if e.section_title.is_empty() { e.anchor.clone() } else { e.section_title.clone() })</td>
+                        <td><span class=(state_class(e.state))>(state_label(e.state))</span></td>
+                        <td>(e.stale_side.map_or("both (reconcile)", |v| v.as_str()))</td>
+                        <td>(proposal_label(e.proposal))</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
     })
 }
 
@@ -184,6 +205,21 @@ async fn doc_sync(cx: &Cx) -> Result<impl View> {
                 }
                 (diff_html(&pr.diff))
             </section>
+        }
+        match (s.human_hash.is_some(), s.ai_hash.is_some()) {
+            (true, false) => {
+                <p class="notice">
+                    "This document has a human variant only, so there is nothing to keep in sync. Tracking starts once an AI variant is written, by an agent or "
+                    <a href=(action_url(&t, &p, "edit", &ps, Variant::Ai))>"by hand"</a> "."
+                </p>
+            },
+            (false, true) => {
+                <p class="notice">
+                    "This document has an AI variant only, so there is nothing to keep in sync. Tracking starts once a human variant is written, by an agent or "
+                    <a href=(action_url(&t, &p, "edit", &ps, Variant::Human))>"by hand"</a> "."
+                </p>
+            },
+            _ => "",
         }
         <form method="post" action=(format!("{base}/sync-enabled/{ps}")) class="inline">
             <input type="hidden" name="enabled" value=(if s.document.sync_enabled { "0" } else { "1" })>

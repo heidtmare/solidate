@@ -252,7 +252,7 @@ impl TenantTx {
         .bind(s.iter().map(|x| x.title.clone()).collect::<Vec<_>>())
         .bind(s.iter().map(|x| x.level as i16).collect::<Vec<_>>())
         .bind(s.iter().map(|x| x.parent.clone()).collect::<Vec<_>>())
-        .bind(s.iter().map(|x| x.hash).collect::<Vec<_>>())
+        .bind(s.iter().map(|x| x.sync_hash).collect::<Vec<_>>())
         .execute(self.conn())
         .await?;
         Ok(())

@@ -262,6 +262,9 @@ async fn put_inner(cx: &Cx, body: String) -> ApiResult {
         changed: bool,
         /// Sections of the document needing sync after this write.
         sync: Vec<SyncOut<'a>>,
+        /// New AI content hash when this write's diagram edits were carried over.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        followed_ai_hash: Option<Hash>,
     }
     let status = if expect == Expect::Absent {
         StatusCode::CREATED
@@ -276,6 +279,7 @@ async fn put_inner(cx: &Cx, body: String) -> ApiResult {
             content_hash: r.revision.content_hash,
             revision: r.revision.id.to_string(),
             changed: r.created,
+            followed_ai_hash: r.followed,
             sync: r
                 .sync
                 .iter()
@@ -366,6 +370,9 @@ async fn patch_inner(cx: &Cx, body: String) -> ApiResult {
         /// Anchors of the sections written.
         anchors: &'a [String],
         sync: Vec<SyncOut<'a>>,
+        /// New AI content hash when this write's diagram edits were carried over.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        followed_ai_hash: Option<Hash>,
     }
     let res = json(
         StatusCode::OK,
@@ -376,6 +383,7 @@ async fn patch_inner(cx: &Cx, body: String) -> ApiResult {
             revision: r.put.revision.id.to_string(),
             changed: r.put.created,
             anchors: &r.anchors,
+            followed_ai_hash: r.put.followed,
             sync: r
                 .put
                 .sync

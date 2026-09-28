@@ -159,8 +159,11 @@ async fn login_view_edit_conflict_logout(pool: PgPoolOptions, opts: PgConnectOpt
     assert_eq!(r.status, StatusCode::CONFLICT);
     assert!(r.body.contains("changed by someone else") && r.body.contains("Mine."));
 
+    // A human-only document creates no sync debt.
     let r = c.get("/t/acme/p/app/sync").await;
-    assert!(r.body.contains("human changed"));
+    assert!(r.body.contains("All sections are in sync."));
+    let r = c.get("/t/acme/p/app/sync/design/auth").await;
+    assert!(r.body.contains("human variant only"));
 
     let r = c.get("/t/acme/p/nope").await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
@@ -232,32 +235,64 @@ async fn non_member_is_forbidden(pool: PgPoolOptions, opts: PgConnectOptions) {
 
 #[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
 async fn propagate_section_through_editor(pool: PgPoolOptions, opts: PgConnectOptions) {
-    let (_app, mut c) = setup(pool, opts).await;
+    let (app, mut c) = setup(pool, opts).await;
     c.post(
         "/login",
         &[("email", "ada@acme.dev"), ("password", "long-enough-pw"), ("next", "/")],
     )
     .await;
+    // Pair the document, then add a human section the AI variant lacks.
+    let ctx = app.system_ctx("acme").await.unwrap();
+    let doc = DocPath::parse("design/auth").unwrap();
+    let write = |variant, content: &'static str, expect| {
+        let (app, ctx, doc) = (&app, &ctx, &doc);
+        async move {
+            app.put_doc(
+                ctx,
+                PutDoc {
+                    project: "app",
+                    path: doc,
+                    variant,
+                    content,
+                    expect,
+                    message: None,
+                    resolves: &[],
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let ai = write(Variant::Ai, "# Auth\n\n- tokens: opaque\n", Expect::Absent).await;
+    write(
+        Variant::Human,
+        "# Auth\n\nOpaque <b>tokens</b>.\n\n# Keys\n\nRotated monthly.\n",
+        Expect::Any,
+    )
+    .await;
 
     let r = c.get("/t/acme/p/app/sync/design/auth").await;
-    assert!(r.body.contains("/t/acme/p/app/edit/design/auth?v=ai&amp;resolves=auth"));
+    assert!(r.body.contains("/t/acme/p/app/edit/design/auth?v=ai&amp;resolves=keys"));
 
-    let r = c.get("/t/acme/p/app/edit/design/auth?v=ai&resolves=auth").await;
+    let r = c.get("/t/acme/p/app/edit/design/auth?v=ai&resolves=keys").await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(
         r.body
-            .contains("You are translating section #auth from the human variant.")
+            .contains("You are translating section #keys from the human variant.")
     );
-    assert!(r.body.contains(r#"name="resolves" value="auth""#));
+    assert!(r.body.contains(r#"name="resolves" value="keys""#));
 
     let r = c
         .post(
             "/t/acme/p/app/edit/design/auth?v=ai",
             &[
-                ("content", "# Auth\n\n- tokens: opaque\n"),
-                ("base", ""),
+                (
+                    "content",
+                    "# Auth\n\n- tokens: opaque\n\n# Keys\n\n- rotation: monthly\n",
+                ),
+                ("base", &ai.revision.content_hash.to_hex()),
                 ("message", ""),
-                ("resolves", "auth"),
+                ("resolves", "keys"),
             ],
         )
         .await;

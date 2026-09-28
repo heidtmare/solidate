@@ -11,6 +11,11 @@
 //!
 //! `<!-- sources: ... -->` blocks bind sections to repository files (see
 //! [`crate::sources`]). They are left out of semantic hashes.
+//!
+//! Each section has two semantic hashes: `hash`, over its normalized Markdown, and
+//! `sync_hash`, which also leaves out the contents of diagram fences (see
+//! [`crate::diagram`]). Sync compares `sync_hash`, so editing a diagram does not mark
+//! the other variant stale; adding or removing one does.
 
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
@@ -22,6 +27,7 @@ use comrak::options::Plugins;
 use comrak::{Arena, Options, format_commonmark, format_html_with_plugins, html, parse_document};
 use serde::{Deserialize, Serialize};
 
+use crate::diagram::is_diagram;
 use crate::hash::Hash;
 use crate::links::{LinkTarget, parse_include, parse_markdown_link, parse_wiki_target};
 use crate::path::DocPath;
@@ -49,19 +55,39 @@ pub fn options() -> Options<'static> {
 /// Canonical CommonMark for `md`, without source directives. Formatting-only edits
 /// normalize to the same output.
 pub fn normalize(md: &str) -> String {
+    canonical(md, false)
+}
+
+pub fn semantic_hash(md: &str) -> Hash {
+    Hash::of(normalize(md))
+}
+
+/// [`semantic_hash`] with the contents of diagram fences left out. The fences
+/// themselves and their info strings still count.
+pub fn sync_hash(md: &str) -> Hash {
+    Hash::of(canonical(md, true))
+}
+
+fn canonical(md: &str, blank_diagrams: bool) -> String {
     let opts = options();
     let arena = Arena::new();
     let root = parse_document(&arena, md, &opts);
     for (node, _) in source_directives(root) {
         node.detach();
     }
+    if blank_diagrams {
+        for node in root.descendants() {
+            if let NodeValue::CodeBlock(cb) = &mut node.data_mut().value
+                && cb.fenced
+                && is_diagram(&cb.info)
+            {
+                cb.literal.clear();
+            }
+        }
+    }
     let mut out = String::new();
     format_commonmark(root, &opts, &mut out).expect("writing to a String cannot fail");
     out
-}
-
-pub fn semantic_hash(md: &str) -> Hash {
-    Hash::of(normalize(md))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +104,8 @@ pub struct Section {
     pub body: String,
     /// Semantic hash of `body`.
     pub hash: Hash,
+    /// [`sync_hash`] of `body`: the semantic hash without diagram contents.
+    pub sync_hash: Hash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +236,16 @@ pub fn source_bindings(md: &str) -> Vec<SourceBinding> {
     bindings(&source_directives(root), &top)
 }
 
+/// First line (1-based) and anchor of every top-level section after the preamble,
+/// in document order.
+pub(crate) fn section_starts<'a>(root: &'a AstNode<'a>) -> Vec<(usize, String)> {
+    assign_anchors(root)
+        .into_iter()
+        .filter(|h| h.top_level)
+        .map(|h| (h.sourcepos.start.line, h.anchor))
+        .collect()
+}
+
 /// Top-level HTML blocks that are source directives, with their 1-based inclusive
 /// line ranges.
 fn source_directives<'a>(root: &'a AstNode<'a>) -> Vec<(&'a AstNode<'a>, (usize, usize))> {
@@ -246,6 +284,7 @@ fn section(anchor: &str, title: &str, level: u8, parent: Option<String>, ordinal
         parent,
         ordinal,
         hash: semantic_hash(&body),
+        sync_hash: sync_hash(&body),
         body,
     }
 }
@@ -575,6 +614,20 @@ mod tests {
         assert_eq!(hashes(&a), hashes(&plain));
         assert_ne!(a.content_hash, plain.content_hash);
         assert!(!render_html(md, None, &|_| None).html.contains("sources:"));
+    }
+
+    #[test]
+    fn sync_hash_ignores_diagram_contents_but_not_diagrams() {
+        let a = analyze("# A\n\nText.\n\n```mermaid\ngraph TD\n  A-->B\n```\n", None);
+        let edited = analyze("# A\n\nText.\n\n~~~~mermaid\ngraph LR\n  A-->C\n~~~~\n", None);
+        let none = analyze("# A\n\nText.\n", None);
+        let code = analyze("# A\n\nText.\n\n```rust\nfn a() {}\n```\n", None);
+        let code2 = analyze("# A\n\nText.\n\n```rust\nfn b() {}\n```\n", None);
+        assert_eq!(a.sections[0].sync_hash, edited.sections[0].sync_hash);
+        assert_ne!(a.sections[0].hash, edited.sections[0].hash);
+        assert_ne!(a.sections[0].sync_hash, none.sections[0].sync_hash);
+        assert_ne!(code.sections[0].sync_hash, code2.sections[0].sync_hash);
+        assert_eq!(none.sections[0].sync_hash, none.sections[0].hash);
     }
 
     #[test]

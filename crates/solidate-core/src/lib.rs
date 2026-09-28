@@ -1,6 +1,7 @@
 //! Solidate domain logic. No I/O; storage, HTTP and MCP crates depend on this one.
 
 pub mod auth;
+pub mod diagram;
 pub mod diff;
 pub mod edit;
 pub mod hash;

@@ -57,7 +57,7 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
   --data-binary @quickstart.ai.md
 ```
 
-- PUT response: `{path, variant, content_hash, revision, changed, sync: [{anchor, state}]}`.
+- PUT response: `{path, variant, content_hash, revision, changed, sync: [{anchor, state}], followed_ai_hash?}`; `followed_ai_hash` = new AI `content_hash` when diagram edits were carried over ([[guide/variants-and-sync#diagrams]]).
 - PATCH targets: `anchor` -> replace (empty `content` deletes); `after` -> insert after section + subsections; neither -> append.
 - PATCH precondition: `section_hash` (the `hash` from `GET ?section=`, same `subsections`, no `expand`) -> 412 only if that span changed; or `If-Match` (whole variant). Replace without either -> 428; inserts need none.
 - PATCH rejects (400): another section's anchor would change (unclosed fence, duplicate heading); inserted text without leading heading.
@@ -89,6 +89,7 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 |---|---|---|
 | GET | `/projects/{p}/sync` | queue |
 | GET | `/projects/{p}/sync/{path}` | doc status; `anchor=` -> sync item |
+| GET | `/projects/{p}/untranslated` | `[{path, document_title, missing}]`; sync-enabled own docs with one variant |
 | POST | `/projects/{p}/resolve/{path}` | exactly one of `{"anchors": [...]}`, `{"all": true}`, `{"paired": true}` |
 | GET | `/projects/{p}/translation-guide` | `{source, content}` |
 | GET | `/projects/{p}/proposals` | with `diff`, `outdated` |

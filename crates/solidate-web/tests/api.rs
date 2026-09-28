@@ -323,20 +323,19 @@ async fn sync_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
         }
     };
 
+    // One variant only: out of the sync queue, listed as untranslated.
     let h = put("human", "*".into(), "# Auth\n\nOpaque tokens.\n", "").await;
-    assert_eq!(h.json()["sync"][0]["state"], "human_ahead");
+    assert_eq!(h.json()["sync"].as_array().unwrap().len(), 0);
     let q = api.req("GET", "/api/v1/projects/app/sync", &[], None).await.json();
-    assert_eq!(
-        (q[0]["anchor"].as_str(), q[0]["stale_side"].as_str()),
-        (Some("auth"), Some("ai"))
-    );
-
-    let item = api
-        .req("GET", "/api/v1/projects/app/sync/auth?anchor=auth", &[], None)
+    assert_eq!(q.as_array().unwrap().len(), 0);
+    let u = api
+        .req("GET", "/api/v1/projects/app/untranslated", &[], None)
         .await
         .json();
-    assert_eq!(item["human"]["body"], "# Auth\n\nOpaque tokens.\n");
-    assert!(item["ai_head"].is_null());
+    assert_eq!(
+        (u[0]["path"].as_str(), u[0]["missing"].as_str()),
+        (Some("auth"), Some("ai"))
+    );
 
     // Propagate to the AI variant and resolve in the same write.
     let a = put("ai", "*".into(), "# Auth\n\n- tokens: opaque\n", "auth").await;
@@ -742,7 +741,8 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
     .await;
     assert!(!err, "{out}");
     let written: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(written["sync_pending"][0]["stale_side"], "ai");
+    assert_eq!(written["sync_pending"].as_array().unwrap().len(), 0);
+    assert!(written["followed_ai_hash"].is_null());
 
     let (_, out) = tool(
         &router,
@@ -765,16 +765,10 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
     .await;
     assert!(err && out.contains(written["content_hash"].as_str().unwrap()), "{out}");
 
-    // Propagate to the AI variant.
-    let (_, out) = tool(
-        &router,
-        &rw,
-        "get_sync_item",
-        serde_json::json!({"project": "app", "path": "notes", "anchor": "notes"}),
-    )
-    .await;
-    let item: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(item["stale_side"], "ai");
+    // Write the missing AI variant.
+    let (_, out) = tool(&router, &rw, "get_untranslated", serde_json::json!({"project": "app"})).await;
+    let untranslated: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(untranslated[0]["missing"], "ai");
     let (err, out) = tool(
         &router,
         &rw,

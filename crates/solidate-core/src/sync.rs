@@ -1,8 +1,8 @@
 //! Tracks sync between a document's human and AI variants.
 //!
 //! Each variant splits into sections, and sections are paired by anchor. For every
-//! pair, Solidate records a [`SyncBase`]: the semantic hash each side had when the pair
-//! was last reconciled. Comparing current hashes to that base tells which side moved:
+//! pair, Solidate records a [`SyncBase`]: the sync hash (see
+//! [`crate::markdown::sync_hash`]) each side had when the pair was last reconciled. Comparing current hashes to that base tells which side moved:
 //!
 //! | human changed | AI changed | state         |
 //! |---------------|------------|---------------|
@@ -13,6 +13,8 @@
 //!
 //! Additional rules:
 //!
+//! - A document with only one variant has no pairs. Sync starts when the second
+//!   variant is first written.
 //! - A missing side counts as a hash of `None`. Adding or deleting a section is a
 //!   change, so a section present only in the human variant is `HumanAhead` until
 //!   its AI counterpart is written or the human section is deleted.
@@ -115,6 +117,12 @@ impl SyncState {
     pub fn needs_attention(self) -> bool {
         self != Self::InSync
     }
+
+    /// Whether a person must act: the human variant is stale, or both variants
+    /// changed. A stale AI variant is left to agents.
+    pub fn needs_person(self) -> bool {
+        matches!(self, Self::AiAhead | Self::Conflict)
+    }
 }
 
 impl FromStr for SyncState {
@@ -169,16 +177,24 @@ impl SectionSync {
     }
 }
 
-/// `(anchor, hash)` pairs of analyzed sections, for [`plan`].
+/// `(anchor, sync hash)` pairs of analyzed sections, for [`plan`].
 pub fn section_hashes(sections: &[Section]) -> Vec<(&str, Hash)> {
-    sections.iter().map(|s| (s.anchor.as_str(), s.hash)).collect()
+    sections.iter().map(|s| (s.anchor.as_str(), s.sync_hash)).collect()
 }
 
 /// Classifies every section pair in a document. The result is ordered by the human
 /// variant, then AI-only sections in AI order, then pairs left only in `bases`.
 ///
-/// `human` and `ai` are `(anchor, semantic hash)` pairs in document order.
-pub fn plan(human: &[(&str, Hash)], ai: &[(&str, Hash)], bases: &HashMap<String, SyncBase>) -> Vec<SectionSync> {
+/// `human` and `ai` are `(anchor, sync hash)` pairs in document order, `None` for a
+/// variant that has not been written. The plan is empty unless both are written.
+pub fn plan(
+    human: Option<&[(&str, Hash)]>,
+    ai: Option<&[(&str, Hash)]>,
+    bases: &HashMap<String, SyncBase>,
+) -> Vec<SectionSync> {
+    let (Some(human), Some(ai)) = (human, ai) else {
+        return Vec::new();
+    };
     let h: HashMap<&str, Hash> = human.iter().copied().collect();
     let a: HashMap<&str, Hash> = ai.iter().copied().collect();
 
@@ -258,26 +274,30 @@ mod tests {
             (
                 "a".into(),
                 SyncBase {
-                    human: Some(human.section("a").unwrap().hash),
-                    ai: Some(ai.section("a").unwrap().hash),
+                    human: Some(human.section("a").unwrap().sync_hash),
+                    ai: Some(ai.section("a").unwrap().sync_hash),
                 },
             ),
             (
                 "b".into(),
                 SyncBase {
                     human: h("stale"),
-                    ai: Some(ai.section("b").unwrap().hash),
+                    ai: Some(ai.section("b").unwrap().sync_hash),
                 },
             ),
             (
                 "gone".into(),
                 SyncBase {
                     human: h("old"),
-                    ai: Some(ai.section("gone").unwrap().hash),
+                    ai: Some(ai.section("gone").unwrap().sync_hash),
                 },
             ),
         ]);
-        let p = plan(&section_hashes(&human.sections), &section_hashes(&ai.sections), &bases);
+        let p = plan(
+            Some(&section_hashes(&human.sections)),
+            Some(&section_hashes(&ai.sections)),
+            &bases,
+        );
         let got: Vec<_> = p.iter().map(|s| (s.anchor.as_str(), s.state)).collect();
         assert_eq!(
             got,
@@ -292,10 +312,33 @@ mod tests {
         assert_eq!(
             rec[0].1,
             SyncBase {
-                human: Some(human.section("b").unwrap().hash),
-                ai: Some(ai.section("b").unwrap().hash)
+                human: Some(human.section("b").unwrap().sync_hash),
+                ai: Some(ai.section("b").unwrap().sync_hash)
             }
         );
+    }
+
+    #[test]
+    fn single_variant_documents_have_no_pairs() {
+        let human = analyze("# A\n\ntext\n", None);
+        let pairs = section_hashes(&human.sections);
+        assert!(plan(Some(&pairs), None, &HashMap::new()).is_empty());
+        assert!(plan(None, Some(&pairs), &HashMap::new()).is_empty());
+        let empty: Vec<(&str, Hash)> = Vec::new();
+        let p = plan(Some(&pairs), Some(&empty), &HashMap::new());
+        assert_eq!(
+            p[0].state,
+            SyncState::HumanAhead,
+            "a written but empty variant still pairs"
+        );
+    }
+
+    #[test]
+    fn people_act_on_stale_human_sides_and_conflicts() {
+        assert!(!SyncState::InSync.needs_person());
+        assert!(!SyncState::HumanAhead.needs_person());
+        assert!(SyncState::AiAhead.needs_person());
+        assert!(SyncState::Conflict.needs_person());
     }
 
     proptest! {

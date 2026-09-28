@@ -54,6 +54,8 @@ enum Cmd {
     },
     /// List sections needing sync in a project.
     SyncQueue { tenant: String, project: String },
+    /// List sync-enabled documents with one variant only, and the variant missing.
+    Untranslated { tenant: String, project: String },
     #[command(subcommand)]
     Sources(SourcesCmd),
     /// List sections whose source files drifted since verification.
@@ -281,6 +283,12 @@ async fn run(app: &App, cmd: Cmd) -> Result<()> {
             for e in app.sync_queue(&ctx, &project).await? {
                 let side = e.stale_side.map_or("both", |v| v.as_str());
                 println!("{}#{}\t{}\tstale={side}", e.path, e.anchor, e.state);
+            }
+        }
+        Cmd::Untranslated { tenant, project } => {
+            let ctx = app.system_ctx(&tenant).await?;
+            for u in app.untranslated(&ctx, &project).await? {
+                println!("{}\tmissing={}", u.path, u.missing);
             }
         }
         Cmd::Sources(SourcesCmd::Report {

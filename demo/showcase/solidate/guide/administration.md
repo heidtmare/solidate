@@ -67,6 +67,7 @@ was loaded with `import --synced`.
 
 ```sh
 solidate sync-queue acme docs
+solidate untranslated acme docs
 solidate sources report acme docs --dir ~/src/docs-repo
 solidate drift acme docs
 solidate audit acme --limit 20

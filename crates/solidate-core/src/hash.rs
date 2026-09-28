@@ -5,8 +5,9 @@
 //! - A **content hash** covers the exact bytes a person or tool wrote. It identifies a
 //!   blob and is the HTTP `ETag`, so any byte change, even whitespace, produces a new one.
 //! - A **semantic hash** covers normalized Markdown (see [`crate::markdown::normalize`]).
-//!   Sync tracking uses it so that reformatting a section does not mark its
-//!   counterpart stale.
+//!   Sync tracking uses a variant that also leaves out diagram contents
+//!   ([`crate::markdown::sync_hash`]), so that reformatting a section or editing its
+//!   diagrams does not mark its counterpart stale.
 //!
 //! [`Merkle`] rolls many hashes into one so a client can check a whole document or
 //! project with a single comparison.

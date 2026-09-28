@@ -27,7 +27,8 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 ```
 
 The server sends instructions on connect that explain the two variants and the
-translation workflow, so the agent does not need a custom prompt.
+translation workflow, so the agent does not need a custom prompt. The
+[[#prompts]] appear in Claude Code as `/mcp__solidate__translate-queue` and so on.
 
 ## Tools {#tools}
 
@@ -59,6 +60,22 @@ Tools that take `variant` default to `human`, except `read_doc`, which reads
 the AI variant and falls back to the human variant when no AI variant exists.
 Its response names the variant read. Search covers both variants unless
 `variant` restricts it.
+
+## Prompts {#prompts}
+
+The server also offers prompts, which clients such as Claude Code list as slash
+commands. Each prompt is a workflow template: it tells the agent which tools to
+call and in what order, and reads no data itself.
+
+| Prompt | Arguments | Workflow |
+|---|---|---|
+| `translate-queue` | `project`, `limit` (default 10) | Translate pending sections and submit them as proposals for review |
+| `fix-drift` | `project` | Update or verify the sections whose source files changed |
+| `document-change` | `project`, `paths`, `summary` | Update the sections describing a set of changed files, in both variants |
+
+`translate-queue` skips sections that already have a current proposal and
+reports conflicts, where both variants changed, for a person to reconcile.
+`document-change` takes its paths as one string separated by commas or spaces.
 
 ## Editing one section {#section-edits}
 

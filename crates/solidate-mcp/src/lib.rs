@@ -7,12 +7,19 @@
 
 use std::sync::Arc;
 
+use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Extensions, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CallToolResult, ContentBlock, Extensions, GetPromptResult, Implementation, PromptMessage, Role, ServerCapabilities,
+    ServerConfig,
+};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{ErrorData as McpError, ServerHandler, schemars, tool, tool_handler, tool_router};
+use rmcp::{
+    ErrorData as McpError, ServerHandler, prompt, prompt_handler, prompt_router, schemars, tool, tool_handler,
+    tool_router,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use solidate_app::core::edit::span_hash;
@@ -57,6 +64,7 @@ pub struct SolidateMcp {
     /// stores the [`Ctx`] in the request extensions.
     bearer: Option<Arc<str>>,
     tool_router: ToolRouter<Self>,
+    prompt_router: PromptRouter<Self>,
 }
 
 fn ok(v: Value) -> ToolResult {
@@ -285,6 +293,24 @@ pub struct ContextArgs {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct TranslateQueuePrompt {
+    /// Project slug.
+    pub project: String,
+    /// Maximum sections to translate in this session (default 10).
+    pub limit: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct DocumentChangePrompt {
+    /// Project slug.
+    pub project: String,
+    /// Changed repository paths, separated by commas or whitespace.
+    pub paths: String,
+    /// What the code change does.
+    pub summary: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct VerifyArgs {
     pub project: String,
     pub path: String,
@@ -302,6 +328,7 @@ impl SolidateMcp {
             app,
             bearer: Some(bearer.into()),
             tool_router: Self::tool_router(),
+            prompt_router: Self::prompt_router(),
         }
     }
 
@@ -311,6 +338,7 @@ impl SolidateMcp {
             app,
             bearer: None,
             tool_router: Self::tool_router(),
+            prompt_router: Self::prompt_router(),
         }
     }
 
@@ -784,10 +812,140 @@ impl SolidateMcp {
     }
 }
 
+fn user_prompt(description: &str, text: String) -> GetPromptResult {
+    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, text)]).with_description(description)
+}
+
+/// Splits a prompt argument listing paths by commas and whitespace.
+fn split_paths(paths: &str) -> Vec<&str> {
+    paths
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// Prompts are workflow templates: they name the tools to call and in which order,
+/// and read no data themselves.
+#[prompt_router]
+impl SolidateMcp {
+    #[prompt(
+        name = "translate-queue",
+        description = "Translate pending sections of a project's sync queue and submit them as proposals for review."
+    )]
+    async fn translate_queue(
+        &self,
+        Parameters(a): Parameters<TranslateQueuePrompt>,
+    ) -> Result<GetPromptResult, McpError> {
+        let limit = match a.limit.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+            None => 10,
+            Some(l) => l
+                .parse::<u32>()
+                .map_err(|_| McpError::invalid_params("limit must be a positive integer", None))?,
+        };
+        let p = &a.project;
+        Ok(user_prompt(
+            "Translate the sync queue",
+            format!(
+                "Translate pending documentation in Solidate project `{p}`, at most {limit} sections.\n\n\
+                 1. Call get_translation_guide(project=\"{p}\") and follow its rules.\n\
+                 2. Call get_sync_queue(project=\"{p}\"). Skip entries whose `proposal` is set and not outdated. \
+                 An entry with stale_side null changed in both variants: do not translate it; list it in your \
+                 summary for a person to reconcile.\n\
+                 3. For each remaining section, call get_sync_item(project=\"{p}\", path, anchor). Carry the \
+                 changes in the fresh variant over to the stale variant (stale_side). State the same facts; keep \
+                 the heading text or explicit `{{#anchor}}` so the anchor stays paired.\n\
+                 4. Call propose_translation with the full content of the stale variant, base_hash set to that \
+                 variant's head from the sync item (human_head or ai_head), and `resolves` listing the anchors \
+                 translated. Group all sections of one document into one proposal. In `message`, note anything \
+                 ambiguous in the source.\n\
+                 5. If a change does not alter meaning (typo, formatting), call resolve_sync for that anchor \
+                 instead of proposing.\n\n\
+                 Finish with a list of proposals submitted, sections resolved, and conflicts left for review."
+            ),
+        ))
+    }
+
+    #[prompt(
+        name = "fix-drift",
+        description = "Work through a project's drift queue: update sections whose source files changed, or verify them."
+    )]
+    async fn fix_drift(&self, Parameters(a): Parameters<ProjectArg>) -> GetPromptResult {
+        let p = &a.project;
+        user_prompt(
+            "Fix documentation drift",
+            format!(
+                "Resolve documentation drift in Solidate project `{p}`. Run this from a checkout of the \
+                 repository the project documents.\n\n\
+                 1. Call get_drift_queue(project=\"{p}\"). Note its `revision`.\n\
+                 2. For each entry:\n\
+                 \x20  - state `changed`: run `git diff <verified_revision> -- <changed paths>` and read the \
+                 added paths.\n\
+                 \x20  - state `unverified`: read the files matching the section's patterns.\n\
+                 \x20  - `missing` patterns: find where the code moved and fix the `<!-- sources: -->` line, or \
+                 remove the pattern.\n\
+                 3. Read the section with read_doc(project=\"{p}\", path, section=anchor, variant=\"human\") and \
+                 compare it with the code.\n\
+                 4. If it is inaccurate, rewrite it with write_section(variant=\"human\"), passing the section's \
+                 `hash` as section_hash. Then read the same section with variant=\"ai\" and rewrite it with \
+                 write_section(variant=\"ai\"), `resolves` set to the anchor.\n\
+                 5. If it is still accurate (or once updated), call verify_sources(project=\"{p}\", path, anchors, \
+                 revision) with the revision from step 1.\n\n\
+                 Finish with the sections rewritten and the sections verified unchanged."
+            ),
+        )
+    }
+
+    #[prompt(
+        name = "document-change",
+        description = "Update the documentation that describes a set of changed repository files."
+    )]
+    async fn document_change(
+        &self,
+        Parameters(a): Parameters<DocumentChangePrompt>,
+    ) -> Result<GetPromptResult, McpError> {
+        let paths = split_paths(&a.paths);
+        if paths.is_empty() {
+            return Err(McpError::invalid_params("paths must name at least one file", None));
+        }
+        let p = &a.project;
+        let list = serde_json::to_string(&paths).expect("strings serialize");
+        let summary = a
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("The change: {s}\n\n"))
+            .unwrap_or_default();
+        Ok(user_prompt(
+            "Document a code change",
+            format!(
+                "Update the documentation in Solidate project `{p}` for a change to these repository files: \
+                 {list}.\n\n{summary}\
+                 1. Call context_for_paths(project=\"{p}\", paths={list}, variant=\"human\") to read the \
+                 sections bound to these files. Follow `links` to decision records when the change touches a \
+                 recorded decision.\n\
+                 2. Compare each section with the changed code (`git diff` of the paths). Leave sections that are \
+                 still accurate unchanged.\n\
+                 3. Rewrite inaccurate sections with write_section(variant=\"human\"), passing the section's \
+                 `hash` as section_hash. Keep the heading text and the `<!-- sources: -->` line; update the line \
+                 if files were added, moved or removed.\n\
+                 4. Apply the same change to the AI variant: read_doc(section=anchor, variant=\"ai\"), then \
+                 write_section(variant=\"ai\") with `resolves` set to the anchors you changed. Follow \
+                 get_translation_guide(project=\"{p}\") for the AI variant's style.\n\
+                 5. If a new file has no documentation, use search to find the document it belongs in and add a \
+                 section with write_section(after=anchor), including a `<!-- sources: -->` line.\n\
+                 6. If source reports are in use, call verify_sources for the sections you checked.\n\n\
+                 Finish with the sections changed and the sections checked but left as they were."
+            ),
+        ))
+    }
+}
+
 #[tool_handler(router = self.tool_router)]
+#[prompt_handler(router = self.prompt_router)]
 impl ServerHandler for SolidateMcp {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
             .with_server_info(Implementation::new("solidate", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS)
     }

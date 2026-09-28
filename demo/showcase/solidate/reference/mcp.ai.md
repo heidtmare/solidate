@@ -18,6 +18,7 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 ```
 
 - server `instructions` on initialize: variants model + translation workflow. No custom prompt needed.
+- [[#prompts]] in Claude Code: `/mcp__solidate__<prompt>`.
 
 ## Tools {#tools}
 
@@ -46,6 +47,18 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `verify_sources` | `project`, `path`, `anchors`, `revision?` | doc drift entries; `revision` != current report -> error |
 
 - `variant` default: `human`; except `read_doc` (`ai`, fallback `human`; response `variant` = variant read) and `search` (both variants).
+
+## Prompts {#prompts}
+
+Workflow templates (`prompts/list`, `prompts/get`); one user message naming the tools to call, in order. Read no data; args are strings.
+
+| prompt | args | workflow |
+|---|---|---|
+| `translate-queue` | `project`, `limit?` (10) | `get_translation_guide` -> `get_sync_queue` (skip current proposals; conflicts reported, not translated) -> `get_sync_item` -> `propose_translation` (one per document) or `resolve_sync` for meaning-neutral edits |
+| `fix-drift` | `project` | `get_drift_queue` -> `git diff <verified_revision>` -> `read_doc` -> `write_section` (human, then ai with `resolves`) -> `verify_sources` with queue `revision` |
+| `document-change` | `project`, `paths` (comma/whitespace separated), `summary?` | `context_for_paths` (human) -> `write_section` human then ai (`resolves`) -> new files: `search` + insert section with `<!-- sources: -->` -> `verify_sources` |
+
+- empty `paths` or non-integer `limit` -> `invalid_params` error.
 
 ## Editing one section {#section-edits}
 

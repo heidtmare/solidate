@@ -20,6 +20,7 @@ async fn project_home(cx: &Cx) -> Result<impl View> {
     let tree = app.tree(&ctx, path_param_segment(cx, "project")).await.or_http()?;
     let chain = app.project_chain(&ctx, &tree.project.slug).await.or_http()?;
     let queue = app.sync_queue(&ctx, &tree.project.slug).await.or_http()?;
+    let for_people = queue.iter().filter(|e| e.state.needs_person()).count();
     let (t, p) = (ctx.tenant.slug.clone(), tree.project.slug.clone());
     let ancestors: Vec<String> = chain.iter().skip(1).map(|x| x.slug.clone()).collect();
 
@@ -33,7 +34,7 @@ async fn project_home(cx: &Cx) -> Result<impl View> {
             <div class="actions">
                 <a class="button" href=(format!("{}/new", project_url(&t, &p)))>"New document"</a>
                 <a class="button secondary" href=(format!("{}/sync", project_url(&t, &p)))>
-                    "Sync queue " <span class="count">(queue.len())</span>
+                    "Sync queue " <span class=(if for_people > 0 { "count warn" } else { "count" })>(for_people)</span>
                 </a>
                 <a class="button secondary" href=(format!("{}/llms.txt", project_url(&t, &p)))>"llms.txt"</a>
             </div>

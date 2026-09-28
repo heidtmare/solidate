@@ -223,7 +223,7 @@ impl App {
             }
         }
         let bases = tx.sync_bases(document.id).await?;
-        let after = plan(&human, &ai, &bases);
+        let after = plan(Some(&human), Some(&ai), &bases);
         let resolves: Vec<String> = if req.resolves.is_empty() {
             current
                 .plan

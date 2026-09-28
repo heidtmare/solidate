@@ -44,7 +44,12 @@ write_doc, listing the translated section anchors in `resolves`.\n\n\
 To translate changes made by others: call get_translation_guide once per project, take sections from \
 get_sync_queue that have no current proposal, read each with get_sync_item, and submit the full translated \
 variant with propose_translation. A person reviews and accepts proposals. Use resolve_sync only when an edit \
-does not change meaning (typos, formatting) so no translation is needed.\n\n\
+does not change meaning (typos, formatting) so no translation is needed. A document with one variant only is \
+not in the sync queue; get_untranslated lists them, and proposing the missing variant starts its sync.\n\n\
+Diagram fences (```mermaid) are shared by both variants, not translated: copy them verbatim. Editing a \
+diagram's contents does not mark the other variant stale, and a human-variant edit is carried over to an \
+identical copy in the AI variant automatically (write responses then return followed_ai_hash, the AI \
+variant's new content_hash). Adding or removing a diagram is a change to translate.\n\n\
 Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.\n\n\
 Sections can declare the repository files they describe with an HTML comment on its own lines, \
 `<!-- sources: path/file.rs, dir/, src/**/*.sql -->` (paths relative to the repository root). Before changing code, \
@@ -535,6 +540,7 @@ impl SolidateMcp {
             "variant": variant,
             "content_hash": r.revision.content_hash,
             "changed": r.created,
+            "followed_ai_hash": r.followed,
             "sync_pending": pending,
         }))
     }
@@ -592,6 +598,7 @@ impl SolidateMcp {
             "variant": variant,
             "content_hash": r.put.revision.content_hash,
             "changed": r.put.created,
+            "followed_ai_hash": r.put.followed,
             "anchors": r.anchors,
             "sync_pending": pending,
         }))
@@ -603,6 +610,14 @@ impl SolidateMcp {
     async fn get_sync_queue(&self, Parameters(a): Parameters<ProjectArg>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
         ok(json!(try_app!(self.app.sync_queue(&ctx, &a.project).await)))
+    }
+
+    #[tool(
+        description = "Sync-enabled documents of a project that have only one variant. `missing` is the variant to write; submit it with propose_translation (base_hash omitted). These documents are not in the sync queue until both variants exist."
+    )]
+    async fn get_untranslated(&self, Parameters(a): Parameters<ProjectArg>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        ok(json!(try_app!(self.app.untranslated(&ctx, &a.project).await)))
     }
 
     #[tool(
@@ -879,7 +894,10 @@ impl SolidateMcp {
                  translated. Group all sections of one document into one proposal. In `message`, note anything \
                  ambiguous in the source.\n\
                  5. If a change does not alter meaning (typo, formatting), call resolve_sync for that anchor \
-                 instead of proposing.\n\n\
+                 instead of proposing.\n\
+                 6. If sections remain within the limit, call get_untranslated(project=\"{p}\") and, for documents \
+                 without a current proposal, read the existing variant with read_doc and propose the missing one \
+                 (base_hash omitted). Copy diagram fences verbatim.\n\n\
                  Finish with a list of proposals submitted, sections resolved, and conflicts left for review."
             ),
         ))

@@ -1,5 +1,6 @@
-//! Human/AI sync: per-document status, the project queue, item detail for
-//! propagation, and resolution. State rules are in [`solidate_core::sync`].
+//! Human/AI sync: per-document status, the project queue, documents missing a
+//! variant, item detail for propagation, and resolution. State rules are in
+//! [`solidate_core::sync`].
 
 use std::collections::HashMap;
 
@@ -40,7 +41,14 @@ pub(crate) async fn doc_plan(tx: &mut TenantTx, document: DocumentId) -> Result<
         None => Vec::new(),
     };
     let bases = tx.sync_bases(document).await?;
-    let plan = plan(&pairs(&human_sections), &pairs(&ai_sections), &bases);
+    let plan = {
+        let (h, a) = (pairs(&human_sections), pairs(&ai_sections));
+        plan(
+            human.is_some().then_some(h.as_slice()),
+            ai.is_some().then_some(a.as_slice()),
+            &bases,
+        )
+    };
     Ok(Plan {
         plan,
         human,
@@ -102,6 +110,15 @@ pub struct QueueEntry {
     pub stale_side: Option<Variant>,
     /// Open translation proposal covering the section.
     pub proposal: Option<ProposalRef>,
+}
+
+/// A sync-enabled document with only one variant written.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Untranslated {
+    pub path: String,
+    pub document_title: Option<String>,
+    /// The variant to write.
+    pub missing: Variant,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -202,6 +219,32 @@ impl App {
             }
         }
         Ok(out)
+    }
+
+    /// `project`'s own sync-enabled documents that have one variant only. They are
+    /// out of the sync queue until the missing variant is written.
+    pub async fn untranslated(&self, ctx: &Ctx, project: &str) -> Result<Vec<Untranslated>> {
+        let mut tx = self.tx(ctx).await?;
+        let p = project_by_slug(&mut tx, project).await?;
+        ctx.require(Access::Read, Some(&p))?;
+        Ok(tx
+            .documents(p.id)
+            .await?
+            .into_iter()
+            .filter(|d| d.sync_enabled)
+            .filter_map(|d| {
+                let missing = match (d.human_hash, d.ai_hash) {
+                    (Some(_), None) => Variant::Ai,
+                    (None, Some(_)) => Variant::Human,
+                    _ => return None,
+                };
+                Some(Untranslated {
+                    path: d.path,
+                    document_title: d.title,
+                    missing,
+                })
+            })
+            .collect())
     }
 
     pub async fn sync_item(&self, ctx: &Ctx, project: &str, path: &DocPath, anchor: &str) -> Result<SyncItem> {

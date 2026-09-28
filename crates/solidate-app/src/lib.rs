@@ -27,7 +27,7 @@ pub use ratelimit::RateLimit;
 pub use sources::{
     AffectedSection, DriftEntry, DriftQueue, MAX_REPORT_FILES, SectionContext, SnapshotSummary, SourceReport,
 };
-pub use sync::{DocSync, QueueEntry, SectionText, SyncItem};
+pub use sync::{DocSync, QueueEntry, SectionText, SyncItem, Untranslated};
 
 pub use openidconnect;
 pub use solidate_core as core;

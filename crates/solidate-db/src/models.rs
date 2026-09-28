@@ -139,6 +139,7 @@ pub struct SectionRow {
     pub title: String,
     pub level: i16,
     pub parent_anchor: Option<String>,
+    /// Sync hash (see [`solidate_core::markdown::sync_hash`]).
     pub hash: Hash,
 }
 

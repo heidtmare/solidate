@@ -73,9 +73,10 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
     } else {
         app.doc_sync(&ctx, project, &path).await.ok()
     };
+    // Sections waiting on agents (human variant ahead) are marked but not counted.
     let stale = sync
         .as_ref()
-        .map_or(0, |s| s.sections.iter().filter(|x| x.state.needs_attention()).count());
+        .map_or(0, |s| s.sections.iter().filter(|x| x.state.needs_person()).count());
     let pending: std::collections::HashMap<String, SyncState> = sync
         .iter()
         .flat_map(|s| &s.sections)
@@ -129,7 +130,7 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
                             <li class=(format!("l{}", o.level))>
                                 <a href=(format!("#{}", o.anchor))>(o.title.clone())</a>
                                 match pending.get(&o.anchor) {
-                                    Some(st) => <span class=(if *st == SyncState::Conflict { "dot conflict" } else { "dot" }) title=(st.as_str())></span>,
+                                    Some(st) => <span class=(dot_class(*st)) title=(dot_title(*st))></span>,
                                     None => "",
                                 }
                             </li>
@@ -169,6 +170,22 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
             </aside>
         </div>
     })
+}
+
+fn dot_class(s: SyncState) -> &'static str {
+    match s {
+        SyncState::Conflict => "dot conflict",
+        SyncState::HumanAhead => "dot agent",
+        _ => "dot",
+    }
+}
+
+fn dot_title(s: SyncState) -> &'static str {
+    match s {
+        SyncState::Conflict => "both variants changed",
+        SyncState::HumanAhead => "waiting on agents to update the AI variant",
+        _ => "the AI variant changed",
+    }
 }
 
 #[component]

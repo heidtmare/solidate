@@ -30,11 +30,12 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `project_index` | `project` | `llms.txt` text |
 | `search` | `query`, `project?`, `variant?`, `limit?` (20, max 100) | per-section hits: `path`, `variant`, `anchor`, `section_title`, `section_hash`, `snippet`; `anchor` null = title/path match only |
 | `read_doc` | `project`, `path`, `variant?` (default `ai`, fallback `human`), `section?`, `subsections?`, `expand?` | `content`, `content_hash`, outline w/ semantic hashes; with `section`: that span's `hash` |
-| `write_doc` | `project`, `path`, `variant?`, `content`, `base_hash?`, `message?`, `resolves?` | `base_hash` required unless creating; inherited path -> override |
-| `write_section` | `project`, `path`, `variant?`, `anchor?` \| `after?`, `subsections?`, `content`, `section_hash?`, `base_hash?`, `message?`, `resolves?` | `{content_hash, changed, anchors, sync_pending}`; see [[#section-edits]] |
+| `write_doc` | `project`, `path`, `variant?`, `content`, `base_hash?`, `message?`, `resolves?` | `base_hash` required unless creating; inherited path -> override; `followed_ai_hash` set when diagram edits were carried into the AI variant |
+| `write_section` | `project`, `path`, `variant?`, `anchor?` \| `after?`, `subsections?`, `content`, `section_hash?`, `base_hash?`, `message?`, `resolves?` | `{content_hash, changed, anchors, sync_pending, followed_ai_hash}`; see [[#section-edits]] |
 | `backlinks` | `project`, `path` | |
 | `doc_history` | `project`, `path`, `variant?`, `limit?` (20) | newest first |
 | `get_sync_queue` | `project` | `stale_side` (`null` = conflict), `proposal` |
+| `get_untranslated` | `project` | `[{path, document_title, missing}]`; propose `missing` with no `base_hash` |
 | `get_sync_item` | `project`, `path`, `anchor` | texts, base texts, diffs, `human_head`, `ai_head` |
 | `resolve_sync` | `project`, `path`, `anchors` \| `paired` | |
 | `get_translation_guide` | `project` | |
@@ -55,7 +56,7 @@ Workflow templates (`prompts/list`, `prompts/get`); one user message naming the 
 
 | prompt | args | workflow |
 |---|---|---|
-| `translate-queue` | `project`, `limit?` (10) | `get_translation_guide` -> `get_sync_queue` (skip current proposals; conflicts reported, not translated) -> `get_sync_item` -> `propose_translation` (one per document) or `resolve_sync` for meaning-neutral edits |
+| `translate-queue` | `project`, `limit?` (10) | `get_translation_guide` -> `get_sync_queue` (skip current proposals; conflicts reported, not translated) -> `get_sync_item` -> `propose_translation` (one per document) or `resolve_sync` for meaning-neutral edits -> remaining limit: `get_untranslated` -> `read_doc` -> `propose_translation` (no `base_hash`) |
 | `fix-drift` | `project` | `get_drift_queue` -> `git diff <verified_revision>` -> `read_doc` -> `write_section` (human, then ai with `resolves`) -> `verify_sources` with queue `revision` |
 | `document-change` | `project`, `paths` (comma/whitespace separated), `summary?` | `context_for_paths` (human) -> `write_section` human then ai (`resolves`) -> new files: `search` + insert section with `<!-- sources: -->` -> `verify_sources` |
 

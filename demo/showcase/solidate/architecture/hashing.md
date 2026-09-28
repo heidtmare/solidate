@@ -21,8 +21,13 @@ versus `_` for emphasis, or `*` versus `-` for bullets, have the same semantic
 hash. Line breaks inside a paragraph are kept by normalization, so rewrapping text
 does count as a change.
 
-Sync compares semantic hashes. That is the point of having two kinds: reformatting
-the human variant should not ask anyone to re-translate the AI variant.
+Sync compares a variant of the semantic hash, the *sync hash*, which also blanks
+the contents of diagram fences such as ` ```mermaid ` blocks. That is the point
+of having more than one kind: reformatting the human variant or redrawing one of
+its diagrams should not ask anyone to re-translate the AI variant. The plain
+semantic hash, which does cover diagram contents, is the section `hash` that
+section edits use as their precondition, so a concurrent diagram edit is still
+detected.
 
 ## Merkle roots {#merkle}
 

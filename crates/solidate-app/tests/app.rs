@@ -150,12 +150,14 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
     let r = put(&app, &ctx, "app", "auth", Variant::Human, human, Expect::Absent, &[])
         .await
         .unwrap();
-    let states: Vec<_> = r.sync.iter().map(|s| (s.anchor.as_str(), s.state)).collect();
+    // One variant only: nothing to sync yet, listed as untranslated.
+    assert!(r.sync.is_empty());
+    assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+    let u = app.untranslated(&ctx, "app").await.unwrap();
     assert_eq!(
-        states,
-        [("auth", SyncState::HumanAhead), ("expiry", SyncState::HumanAhead)]
+        u.iter().map(|x| (x.path.as_str(), x.missing)).collect::<Vec<_>>(),
+        [("auth", Variant::Ai)]
     );
-    assert_eq!(app.sync_queue(&ctx, "app").await.unwrap().len(), 2);
 
     // Agent writes the AI variant and resolves both sections.
     let ai = "# Auth\n\n- tokens: opaque\n\n## Expiry\n\n- session_ttl: 14d\n";
@@ -173,6 +175,7 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
     .unwrap();
     assert!(r.sync.iter().all(|s| s.state == SyncState::InSync));
     assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+    assert!(app.untranslated(&ctx, "app").await.unwrap().is_empty());
 
     // Human edits one section: AI side is stale; detail carries base and diff.
     let human2 = human.replace("14 days", "30 days");
@@ -273,8 +276,91 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
     )
     .await
     .unwrap();
+    assert_eq!(app.untranslated(&ctx, "app").await.unwrap().len(), 1);
     app.set_doc_sync(&ctx, "app", &path("notes"), false).await.unwrap();
     assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+    assert!(app.untranslated(&ctx, "app").await.unwrap().is_empty());
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn diagram_edits_follow_without_sync_debt(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let fence = |edge: &str| format!("```mermaid\ngraph TD\n  {edge}\n```\n");
+    let human = format!("# Flow\n\nClient calls API.\n\n{}", fence("C-->A"));
+    let ai = format!("# Flow\n\n- client -> api\n\n{}", fence("C-->A"));
+    put(&app, &ctx, "app", "flow", Variant::Human, &human, Expect::Absent, &[])
+        .await
+        .unwrap();
+    put(&app, &ctx, "app", "flow", Variant::Ai, &ai, Expect::Absent, &[])
+        .await
+        .unwrap();
+
+    // Editing the diagram leaves sync alone and updates the identical AI copy.
+    let human2 = human.replace("C-->A", "C-->G-->A");
+    let r = put(
+        &app,
+        &ctx,
+        "app",
+        "flow",
+        Variant::Human,
+        &human2,
+        Expect::Head(Hash::of(&human)),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(r.sync.iter().all(|s| s.state == SyncState::InSync), "{:?}", r.sync);
+    let ai2 = ai.replace("C-->A", "C-->G-->A");
+    assert_eq!(r.followed, Some(Hash::of(&ai2)));
+    let head = app
+        .get_doc(&ctx, "app", &path("flow"), Variant::Ai)
+        .await
+        .unwrap()
+        .head
+        .unwrap();
+    assert_eq!(head.content, ai2);
+    assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+
+    // A diverged AI copy is left alone.
+    put(
+        &app,
+        &ctx,
+        "app",
+        "flow",
+        Variant::Ai,
+        &ai2.replace("G-->A", "G-->X"),
+        Expect::Any,
+        &[],
+    )
+    .await
+    .unwrap();
+    let r = put(
+        &app,
+        &ctx,
+        "app",
+        "flow",
+        Variant::Human,
+        &human2.replace("G-->A", "G-->B"),
+        Expect::Any,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.followed, None);
+    assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+
+    // Adding a diagram is a change the AI variant must pick up.
+    let human3 = format!("{}\n{}", human2.replace("G-->A", "G-->B"), fence("X-->Y"));
+    let r = put(&app, &ctx, "app", "flow", Variant::Human, &human3, Expect::Any, &[])
+        .await
+        .unwrap();
+    assert_eq!(r.followed, None);
+    let q = app.sync_queue(&ctx, "app").await.unwrap();
+    assert_eq!(
+        q.iter().map(|e| (e.anchor.as_str(), e.state)).collect::<Vec<_>>(),
+        [("flow", SyncState::HumanAhead)]
+    );
+    assert!(!q[0].state.needs_person());
 }
 
 #[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]

@@ -125,12 +125,12 @@ edit("reference/configuration", "ai",
 
 print("conflict: hashing#semantic edited on both sides")
 edit("architecture/hashing", "human",
-     "Sync compares semantic hashes.",
-     "Sync compares semantic hashes, section by section.",
+     "Sync compares a variant of the semantic hash,",
+     "Sync compares, section by section, a variant of the semantic hash,",
      "Clarify sync granularity")
 edit("architecture/hashing", "ai",
-     "- used by sync (`sections.hash`, `sync_bases`).",
-     "- used by sync (`sections.hash`, `sync_bases`); compared per anchor.",
+     "Used by sync (`sections.hash`, `sync_bases`).",
+     "Used by sync (`sections.hash`, `sync_bases`), compared per anchor.",
      "Clarify comparison unit")
 
 print("human-only section: writing-documents#diagrams")
@@ -138,8 +138,9 @@ edit("guide/writing-documents", "human",
      "[^1]: Footnotes render at the end of the page.\n",
      "[^1]: Footnotes render at the end of the page.\n\n## Diagrams {#diagrams}\n\n"
      "Fenced code blocks tagged `text` keep their layout, which is enough for box\n"
-     "diagrams like the one in [[architecture/overview#layers]]. Mermaid blocks are\n"
-     "shown as code.\n",
+     "diagrams like the one in [[architecture/overview#layers]]. Mermaid blocks\n"
+     "render as diagrams and are shared by both variants; see\n"
+     "[[guide/variants-and-sync#diagrams]].\n",
      "Document diagram options")
 
 q = call("GET", f"/projects/{P}/sync")

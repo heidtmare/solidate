@@ -112,6 +112,7 @@ skipped, but a long-running transaction delays the feed until it ends.
 |---|---|
 | `GET /projects/{p}/sync` | Stale sections across the project |
 | `GET /projects/{p}/sync/{path}` | Per-section status; `?anchor=` for the full sync item |
+| `GET /projects/{p}/untranslated` | Documents with one variant only, and the variant missing |
 | `POST /projects/{p}/resolve/{path}` | Mark sections in sync without editing |
 | `GET /projects/{p}/translation-guide` | The guide in effect |
 | `GET /projects/{p}/proposals` | Open proposals |

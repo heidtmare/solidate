@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
+use solidate_core::diagram;
 use solidate_core::diff::unified;
 use solidate_core::edit::{SectionTarget, splice_section};
 use solidate_core::include::{DEFAULT_MAX_DEPTH, Dependency, expand_includes};
@@ -56,6 +57,9 @@ pub struct PutResult {
     pub created: bool,
     /// Sync plan after the write. Empty when sync is disabled for the document.
     pub sync: Vec<solidate_core::sync::SectionSync>,
+    /// Content hash of the AI revision written to carry this write's diagram edits
+    /// over (see [`solidate_core::diagram::follow`]).
+    pub followed: Option<Hash>,
 }
 
 /// A write of one section of a variant; see [`App::put_section`].
@@ -208,10 +212,10 @@ impl App {
             }
         };
 
+        let previous = tx.head(document.id, req.variant).await?;
         // The first write of a variant whose counterpart exists is its translation:
         // sections present in both are reconciled.
-        let first_translation = tx.head(document.id, req.variant).await?.is_none()
-            && tx.head(document.id, req.variant.other()).await?.is_some();
+        let first_translation = previous.is_none() && tx.head(document.id, req.variant.other()).await?.is_some();
 
         let (revision, created) = tx
             .write_revision(NewRevision {
@@ -229,6 +233,13 @@ impl App {
             tx.delete_variant_proposal(document.id, req.variant).await?;
             prune_verifications(tx, document.id, req.variant, &analysis.sources).await?;
         }
+        let followed = match &previous {
+            Some(prev) if created && document.sync_enabled && req.variant == Variant::Human => {
+                self.follow_diagrams(tx, ctx, &document, req.path, &prev.content, req.content)
+                    .await?
+            }
+            _ => None,
+        };
         let sync = if document.sync_enabled {
             let mut plan = doc_plan(tx, document.id).await?.plan;
             let mut resolves = req.resolves.to_vec();
@@ -265,7 +276,61 @@ impl App {
             revision,
             created,
             sync,
+            followed,
         })
+    }
+
+    /// Writes the AI variant with the diagram edits of a human-variant write from
+    /// `old` to `new` carried over. Returns the new AI content hash, or `None` when
+    /// the AI variant holds no identical copy of an edited diagram. Diagram contents
+    /// are not part of sync hashes, so sync state is unchanged.
+    async fn follow_diagrams(
+        &self,
+        tx: &mut TenantTx,
+        ctx: &Ctx,
+        document: &Document,
+        path: &DocPath,
+        old: &str,
+        new: &str,
+    ) -> Result<Option<Hash>> {
+        let Some(ai) = tx.head(document.id, Variant::Ai).await? else {
+            return Ok(None);
+        };
+        let Some(content) = diagram::follow(old, new, &ai.content) else {
+            return Ok(None);
+        };
+        if content.len() > self.config.max_doc_bytes {
+            return Ok(None);
+        }
+        let analysis = analyze(&content, Some(path));
+        let (revision, created) = tx
+            .write_revision(NewRevision {
+                document: document.id,
+                variant: Variant::Ai,
+                content: &content,
+                analysis: &analysis,
+                author: ctx.author(),
+                message: Some("Carry over diagram changes from the human variant"),
+                expect: Expect::Head(ai.content_hash),
+            })
+            .await?;
+        let detail = json!({
+            "variant": Variant::Ai,
+            "revision": revision.id,
+            "content_hash": revision.content_hash,
+            "changed": created,
+            "follows": Variant::Human,
+        });
+        record(
+            tx,
+            ctx,
+            "doc.write",
+            Some(document.project_id),
+            Some(path.as_str()),
+            detail,
+        )
+        .await?;
+        Ok(Some(revision.content_hash))
     }
 
     /// Replaces, deletes or inserts one section of a variant, leaving the rest of its

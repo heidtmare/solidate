@@ -138,6 +138,14 @@ tr.detail td { border-bottom: none; padding: 0; }
 .markdown h1:hover .anchor, .markdown h2:hover .anchor, .markdown h3:hover .anchor { color: var(--muted); }
 .markdown pre { background: var(--soft); padding: 0.8rem; border-radius: var(--radius); overflow-x: auto; }
 .markdown pre.mermaid { background: none; text-align: center; }
+.diagram-error { border: 1px solid var(--del-fg); border-radius: var(--radius); padding: 0 0.8rem 0.8rem; margin: 1em 0; }
+.diagram-error > p:first-child { color: var(--del-fg); }
+.markdown .diagram-error pre.message { background: var(--del); color: var(--del-fg); white-space: pre-wrap; }
+.markdown .diagram-error pre.numbered { counter-reset: line; }
+pre.numbered span { display: block; white-space: pre; }
+pre.numbered span::before { counter-increment: line; content: counter(line); display: inline-block; width: 2.5em; margin-right: 0.8em; text-align: right; color: var(--muted); }
+pre.numbered span.err { background: var(--del); color: var(--del-fg); }
+.diagram-error .previous { text-align: center; opacity: 0.5; }
 .markdown :not(pre) > code { background: var(--soft); padding: 0.1em 0.3em; border-radius: 4px; }
 .markdown table { border-collapse: collapse; }
 .markdown th, .markdown td { border: 1px solid var(--line); padding: 0.3rem 0.6rem; }

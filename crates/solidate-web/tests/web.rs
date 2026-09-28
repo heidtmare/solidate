@@ -188,7 +188,8 @@ async fn mermaid_preview_and_assets(pool: PgPoolOptions, opts: PgConnectOptions)
         .await;
     assert_eq!(r.status, StatusCode::OK);
     assert!(
-        r.body.contains("<pre class=\"mermaid\">graph TD\n  A--&gt;B\n</pre>"),
+        r.body
+            .contains("<pre class=\"mermaid\" data-line=\"2\">graph TD\n  A--&gt;B\n</pre>"),
         "{}",
         r.body
     );

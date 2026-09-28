@@ -258,6 +258,7 @@ async fn editor(
             <div class="actions">
                 <button type="submit">"Save"</button>
                 <a class="button secondary" href=(cancel)>"Cancel"</a>
+                <span class="diagram-status notice small" hidden=""></span>
             </div>
         </form>
     })

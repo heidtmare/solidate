@@ -53,6 +53,11 @@ differ between the variants are marked with a square in the table of contents
 and listed under **Diagrams that differ** on the Sync pages, drawn side by side.
 Choose **Use in AI variant** or **Use in human variant** to make both match.
 
+A diagram that fails to render shows the error message and its numbered source,
+with the failing line highlighted. In the editor preview the last version that
+rendered stays below the error, and a note next to **Save** lists the document
+line of each error; selecting one selects that line in the editor.
+
 ## Where you see it {#where}
 
 The document page shows a **Sync** button with the number of sections a person

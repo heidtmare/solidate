@@ -448,13 +448,23 @@ pub fn render_html(md: &str, base: Option<&DocPath>, href: &dyn Fn(&LinkTarget) 
         }
     }
 
+    let mermaid = Mermaid(Mutex::new(
+        root.descendants()
+            .filter_map(|n| match &n.data().value {
+                NodeValue::CodeBlock(cb) if cb.fenced && cb.info.split_whitespace().next() == Some("mermaid") => {
+                    Some(n.data().sourcepos.start.line + 1)
+                }
+                _ => None,
+            })
+            .collect(),
+    ));
     let adapter = AnchoredHeadings(Mutex::new(headings.iter().map(|h| h.anchor.clone()).collect()));
     let mut plugins = Plugins::default();
     plugins.render.heading_adapter = Some(&adapter);
     plugins
         .render
         .codefence_renderers
-        .insert("mermaid".to_owned(), &Mermaid);
+        .insert("mermaid".to_owned(), &mermaid);
     let mut html = String::new();
     format_html_with_plugins(root, &opts, &mut html, &plugins).expect("writing to a String cannot fail");
 
@@ -490,11 +500,16 @@ impl HeadingAdapter for AnchoredHeadings {
 }
 
 /// Emits `mermaid` code fences as `<pre class="mermaid">` for the client-side renderer.
-struct Mermaid;
+/// `data-line` is the document line of the diagram's first source line, taken from a
+/// queue of fences in document order, the order comrak renders them.
+struct Mermaid(Mutex<VecDeque<usize>>);
 
 impl CodefenceRendererAdapter for Mermaid {
     fn write(&self, out: &mut dyn fmt::Write, _: &str, _: &str, code: &str, _: Option<Sourcepos>) -> fmt::Result {
-        out.write_str("<pre class=\"mermaid\">")?;
+        match self.0.lock().expect("not poisoned").pop_front() {
+            Some(line) => write!(out, "<pre class=\"mermaid\" data-line=\"{line}\">")?,
+            None => out.write_str("<pre class=\"mermaid\">")?,
+        }
         html::escape(out, code)?;
         out.write_str("</pre>\n")
     }
@@ -576,17 +591,18 @@ mod tests {
     #[test]
     fn renders_mermaid_fences_as_escaped_pre() {
         let r = render_html(
-            "```mermaid\ngraph TD\n  A-->B<script>\n```\n\n```rust\nfn x() {}\n```\n",
+            "Intro.\n\n> ```mermaid\n> graph TD\n>   A-->B<script>\n> ```\n\n```rust\nfn x() {}\n```\n\n```mermaid\nX\n```\n",
             None,
             &|_| None,
         );
         assert!(
             r.html
-                .contains("<pre class=\"mermaid\">graph TD\n  A--&gt;B&lt;script&gt;\n</pre>"),
+                .contains("<pre class=\"mermaid\" data-line=\"4\">graph TD\n  A--&gt;B&lt;script&gt;\n</pre>"),
             "{}",
             r.html
         );
         assert!(r.html.contains(r#"<code class="language-rust">"#));
+        assert!(r.html.contains("<pre class=\"mermaid\" data-line=\"13\">X\n</pre>"));
     }
 
     #[test]

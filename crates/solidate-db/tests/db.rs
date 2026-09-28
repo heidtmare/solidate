@@ -160,9 +160,23 @@ async fn revisions_heads_sections_links(pool: PgPoolOptions, opts: PgConnectOpti
     assert_eq!(docs[0].human_hash, Some(Hash::of(v2)));
     assert!(docs[1].human_hash.is_none());
 
-    let hits = tx.search("rotated", None, 10).await.unwrap();
+    let hits = tx.search("rotated", None, None, 10).await.unwrap();
     assert_eq!(hits.len(), 1);
     assert!(hits[0].snippet_html().contains("<mark>rotated</mark>"));
+    assert_eq!(
+        (hits[0].anchor.as_deref(), hits[0].section_hash, hits[0].variant),
+        (
+            Some("auth"),
+            Some(solidate_core::markdown::semantic_hash(v2)),
+            Variant::Human
+        )
+    );
+    assert!(
+        tx.search("rotated", None, Some(Variant::Ai), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     tx.delete_document(other.id).await.unwrap();
     assert_eq!(tx.documents(p.id).await.unwrap().len(), 1);

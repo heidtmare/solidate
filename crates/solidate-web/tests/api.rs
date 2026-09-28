@@ -460,6 +460,23 @@ async fn drift_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
     let r = api
         .req(
             "POST",
+            "/api/v1/projects/app/context",
+            &[],
+            Some(r#"{"paths": ["src/auth.rs"]}"#),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let c = r.json();
+    assert_eq!(
+        (c[0]["anchor"].as_str(), c[0]["paths"][0].as_str()),
+        (Some("auth"), Some("src/auth.rs"))
+    );
+    assert_eq!(c[0]["variant"], "human"); // no AI variant: falls back
+    assert!(c[0]["content"].as_str().unwrap().starts_with('#'));
+
+    let r = api
+        .req(
+            "POST",
             "/api/v1/projects/app/verify/auth",
             &[],
             Some(r#"{"anchors": ["auth"], "revision": "c1"}"#),
@@ -650,6 +667,7 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
         "report_sources",
         "get_drift_queue",
         "affected_sections",
+        "context_for_paths",
         "verify_sources",
     ] {
         assert!(names.contains(&n), "missing tool {n}");

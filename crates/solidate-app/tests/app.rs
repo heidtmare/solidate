@@ -589,7 +589,7 @@ async fn render_with_includes_and_links(pool: PgPoolOptions, opts: PgConnectOpti
         .unwrap();
     assert!(d.diff.contains("-Be kind.") && d.diff.contains("+Be direct."));
 
-    let hits = app.search(&ctx, "direct", None, 10).await.unwrap();
+    let hits = app.search(&ctx, "direct", None, None, 10).await.unwrap();
     assert_eq!(hits.len(), 1);
 }
 
@@ -997,4 +997,125 @@ async fn source_drift_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
         .await;
     assert!(matches!(denied, Err(AppError::Forbidden)));
     assert!(app.drift_queue(&ro, "app").await.is_ok());
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn search_returns_matching_sections(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let human = "# Auth\n\nOverview.\n\n## Tokens\n\nTokens are rotated daily.\n\n## Sessions\n\nSessions expire; tokens are rotated on logout.\n\n## Other\n\nNothing here.\n";
+    let ai = "# Auth\n\n## Tokens\n\n- rotated daily\n";
+    put(
+        &app,
+        &ctx,
+        "app",
+        "design/auth",
+        Variant::Human,
+        human,
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    put(&app, &ctx, "app", "design/auth", Variant::Ai, ai, Expect::Absent, &[])
+        .await
+        .unwrap();
+
+    let hits = app
+        .search(&ctx, "rotated", None, Some(Variant::Human), 10)
+        .await
+        .unwrap();
+    let mut anchors: Vec<_> = hits.iter().map(|h| h.anchor.as_deref().unwrap()).collect();
+    anchors.sort();
+    assert_eq!(anchors, ["sessions", "tokens"]);
+    let tokens = hits.iter().find(|h| h.anchor.as_deref() == Some("tokens")).unwrap();
+    assert_eq!(tokens.section_title.as_deref(), Some("Tokens"));
+    // The hit's hash is accepted as a section write precondition.
+    app.put_section(
+        &ctx,
+        PutSection {
+            project: "app",
+            path: &path("design/auth"),
+            variant: Variant::Human,
+            target: SectionTarget::Section {
+                anchor: "tokens",
+                subsections: false,
+            },
+            content: "## Tokens\n\nTokens are rotated hourly.\n",
+            expect: Expect::Any,
+            section_hash: tokens.section_hash,
+            message: None,
+            resolves: &[],
+        },
+    )
+    .await
+    .unwrap();
+
+    let ai_hits = app.search(&ctx, "rotated", None, Some(Variant::Ai), 10).await.unwrap();
+    assert_eq!(
+        ai_hits
+            .iter()
+            .map(|h| (h.variant, h.anchor.as_deref()))
+            .collect::<Vec<_>>(),
+        [(Variant::Ai, Some("tokens"))]
+    );
+    assert_eq!(app.search(&ctx, "rotated", None, None, 1).await.unwrap().len(), 1);
+
+    // Path-only match: no section anchor.
+    let by_path = app.search(&ctx, "design", None, None, 10).await.unwrap();
+    assert!(!by_path.is_empty() && by_path.iter().all(|h| h.anchor.is_none()));
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn section_context_prefers_variant_and_lists_links(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let human = "# Auth\n\n## Tokens\n\n<!-- sources: src/auth/ -->\n\nTokens are opaque. See [[decisions/0001]].\n\n## Legacy\n\n<!-- sources: src/old.rs -->\n\nOld flow.\n";
+    let ai = "# Auth\n\n## Tokens\n\n- opaque; see [[shared:decisions/0002#why]]\n";
+    put(
+        &app,
+        &ctx,
+        "app",
+        "design/auth",
+        Variant::Human,
+        human,
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    put(&app, &ctx, "app", "design/auth", Variant::Ai, ai, Expect::Absent, &[])
+        .await
+        .unwrap();
+
+    let paths = vec!["src/auth/token.rs".to_string(), "src/old.rs".to_string()];
+    let c = app.section_context(&ctx, "app", &paths, Variant::Ai).await.unwrap();
+    let got: Vec<_> = c
+        .iter()
+        .map(|s| (s.anchor.as_str(), s.variant, s.paths.clone(), s.links.clone()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (
+                "tokens",
+                Variant::Ai,
+                vec!["src/auth/token.rs".to_string()],
+                vec!["shared:decisions/0002#why".to_string()]
+            ),
+            // Only in the human variant.
+            ("legacy", Variant::Human, vec!["src/old.rs".to_string()], vec![]),
+        ]
+    );
+    assert!(c[0].content.starts_with("## Tokens"));
+
+    let h = app
+        .section_context(&ctx, "app", &paths[..1], Variant::Human)
+        .await
+        .unwrap();
+    assert_eq!((h.len(), h[0].variant), (1, Variant::Human));
+    assert_eq!(h[0].links, ["app:decisions/0001"]);
+    assert!(
+        app.section_context(&ctx, "app", &["/abs".to_string()], Variant::Ai)
+            .await
+            .is_err()
+    );
 }

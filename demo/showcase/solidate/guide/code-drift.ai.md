@@ -52,6 +52,7 @@ Source bindings: a section declares the repository files it describes; clients r
 2. per entry: update section (then translate via sync queue as usual) or confirm still accurate.
 3. verify: MCP `verify_sources {project, path, anchors, revision?}` | `POST /api/v1/projects/{p}/verify/{path}` -> records currently matched files; audit `sources.verify`.
 
+- before code changes: MCP `context_for_paths {project, paths, variant?}` | `POST /api/v1/projects/{p}/context` -> bound sections matching any path, with content (AI variant preferred), hashes, `links`; needs no report.
 - after code changes: MCP `affected_sections {project, paths}` | `POST /api/v1/projects/{p}/affected` `{paths}` -> bound sections matching any path; needs no report.
 - `revision` on verify: must equal current report revision, else error (newer report arrived).
 - verify errors: no report for project; anchor without bindings; empty `anchors`.

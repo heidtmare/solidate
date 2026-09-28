@@ -37,8 +37,8 @@ translation workflow, so the agent does not need a custom prompt.
 | `list_docs` | Effective documents and the project root hash |
 | `project_hash` | Merkle root; unchanged means nothing changed |
 | `project_index` | The `llms.txt` index |
-| `search` | Full-text search |
-| `read_doc` | Read a variant or one section (optionally with its subsections), with its content hash and outline |
+| `search` | Full-text search; each hit is a section, with its anchor and hash |
+| `read_doc` | Read a variant or one section (optionally with its subsections), with its content hash and outline; the AI variant unless another is named |
 | `write_doc` | Write a variant; `base_hash` required except on create |
 | `write_section` | Replace, delete or insert one section without resending the rest |
 | `backlinks` | Documents linking to a document |
@@ -52,7 +52,13 @@ translation workflow, so the agent does not need a custom prompt.
 | `report_sources` | Report repository file hashes for drift tracking |
 | `get_drift_queue` | Sections whose source files changed since verification |
 | `affected_sections` | Sections that describe the given repository paths |
+| `context_for_paths` | The same sections with their content, for reading before a code change |
 | `verify_sources` | Confirm sections still match their source files |
+
+Tools that take `variant` default to `human`, except `read_doc`, which reads
+the AI variant and falls back to the human variant when no AI variant exists.
+Its response names the variant read. Search covers both variants unless
+`variant` restricts it.
 
 ## Editing one section {#section-edits}
 

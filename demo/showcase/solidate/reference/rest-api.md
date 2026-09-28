@@ -79,7 +79,7 @@ covers the same operation for agents.
 | `GET /projects/{p}` | One project |
 | `GET /projects/{p}/tree` | Effective documents, own and inherited, with hashes |
 | `GET /projects/{p}/hash` | Merkle root over the tree; supports `If-None-Match` |
-| `GET /search?q=&project=&limit=` | Full-text search with highlighted snippets |
+| `GET /search?q=&project=&variant=&limit=` | Full-text search; one hit per matching section, with its anchor, hash and a highlighted snippet |
 | `GET /projects/{p}/llms.txt` | Plain-text index for language models |
 
 ## Sync and proposals {#sync}
@@ -105,6 +105,7 @@ call. See [[guide/agents-and-translation]].
 | `GET /projects/{p}/drift` | Bound sections whose sources drifted |
 | `GET /projects/{p}/drift/{path}` | Drift status of every bound section of a document |
 | `POST /projects/{p}/affected` | Sections that describe the given paths |
+| `POST /projects/{p}/context` | The same sections with their content |
 | `POST /projects/{p}/verify/{path}` | Confirm sections still match their sources |
 
 See [[guide/code-drift]] for the workflow.

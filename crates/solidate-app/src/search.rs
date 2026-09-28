@@ -1,3 +1,4 @@
+use solidate_core::Variant;
 use solidate_db::SearchHit;
 
 use crate::App;
@@ -6,8 +7,16 @@ use crate::error::{AppError, Result, invalid};
 use crate::projects::project_by_slug;
 
 impl App {
-    /// Full-text search. Restricted tokens are limited to their project.
-    pub async fn search(&self, ctx: &Ctx, query: &str, project: Option<&str>, limit: i64) -> Result<Vec<SearchHit>> {
+    /// Full-text search returning matching sections, optionally limited to one
+    /// project and variant. Restricted tokens are limited to their project.
+    pub async fn search(
+        &self,
+        ctx: &Ctx,
+        query: &str,
+        project: Option<&str>,
+        variant: Option<Variant>,
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
         let query = query.trim();
         if query.is_empty() {
             return Err(invalid("query is empty"));
@@ -27,6 +36,6 @@ impl App {
                 restricted
             }
         };
-        Ok(tx.search(query, project_id, limit.clamp(1, 100)).await?)
+        Ok(tx.search(query, project_id, variant, limit.clamp(1, 100)).await?)
     }
 }

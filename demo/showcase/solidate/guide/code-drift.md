@@ -76,6 +76,12 @@ the changed paths and returns the sections that describe them, even before a new
 report arrives. Verification accepts the revision the agent checked against and
 fails if a newer report has arrived since.
 
+Before changing code, an agent can call `context_for_paths` with the files it is
+about to touch. It returns the same sections as `affected_sections`, with their
+content (the AI variant where the section has one) and links to related
+documents such as decision records, so the agent starts from the documented
+design.
+
 Removing a section's bindings from both variants discards its verification.
 
 This page binds its own sections to the code that implements them.

@@ -27,8 +27,8 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `list_docs` | `project` | entries (own + inherited, per-variant hashes), root hash |
 | `project_hash` | `project` | Merkle root |
 | `project_index` | `project` | `llms.txt` text |
-| `search` | `query`, `project?`, `limit?` (20, max 100) | hits with snippets |
-| `read_doc` | `project`, `path`, `variant?`, `section?`, `subsections?`, `expand?` | `content`, `content_hash`, outline w/ semantic hashes; with `section`: that span's `hash` |
+| `search` | `query`, `project?`, `variant?`, `limit?` (20, max 100) | per-section hits: `path`, `variant`, `anchor`, `section_title`, `section_hash`, `snippet`; `anchor` null = title/path match only |
+| `read_doc` | `project`, `path`, `variant?` (default `ai`, fallback `human`), `section?`, `subsections?`, `expand?` | `content`, `content_hash`, outline w/ semantic hashes; with `section`: that span's `hash` |
 | `write_doc` | `project`, `path`, `variant?`, `content`, `base_hash?`, `message?`, `resolves?` | `base_hash` required unless creating; inherited path -> override |
 | `write_section` | `project`, `path`, `variant?`, `anchor?` \| `after?`, `subsections?`, `content`, `section_hash?`, `base_hash?`, `message?`, `resolves?` | `{content_hash, changed, anchors, sync_pending}`; see [[#section-edits]] |
 | `backlinks` | `project`, `path` | |
@@ -42,9 +42,10 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `report_sources` | `project`, `revision?`, `files` (`{path: git blob id}`), `removed?`, `replace?` | `{revision, reported_at, files}`; requires `write` |
 | `get_drift_queue` | `project` | `{revision, reported_at, entries}`; see [[guide/code-drift#queue]] |
 | `affected_sections` | `project`, `paths` | bound sections matching any path; no report needed |
+| `context_for_paths` | `project`, `paths`, `variant?` (default `ai`) | `[{path, document_title, anchor, section_title, variant, content, hash, content_hash, paths, links}]`; section only in other variant -> that variant; `links`: `project:path#anchor`; no report needed |
 | `verify_sources` | `project`, `path`, `anchors`, `revision?` | doc drift entries; `revision` != current report -> error |
 
-- `variant` default: `human`.
+- `variant` default: `human`; except `read_doc` (`ai`, fallback `human`; response `variant` = variant read) and `search` (both variants).
 
 ## Editing one section {#section-edits}
 

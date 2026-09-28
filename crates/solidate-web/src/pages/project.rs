@@ -1,6 +1,7 @@
 //! Project home and search.
 
 use solidate_app::core::Variant;
+use solidate_app::db::SearchHit;
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::context::app_context;
@@ -89,7 +90,7 @@ async fn search(cx: &Cx) -> Result<impl View> {
     let hits = if q.trim().is_empty() {
         Vec::new()
     } else {
-        app(cx).search(&ctx, &q, project.as_deref(), 50).await.or_http()?
+        app(cx).search(&ctx, &q, project.as_deref(), None, 50).await.or_http()?
     };
     let t = ctx.tenant.slug.clone();
     Ok(view! {
@@ -108,8 +109,11 @@ async fn search(cx: &Cx) -> Result<impl View> {
         <ol class="results">
             for h in &hits {
                 <li>
-                    <a href=(doc_url(&t, &h.project_slug, &h.path, h.variant))>
+                    <a href=(search_hit_url(&t, h))>
                         (h.title.clone().unwrap_or_else(|| h.path.clone()))
+                        if let Some(st) = h.section_title.as_deref().filter(|st| !st.is_empty() && Some(*st) != h.title.as_deref()) {
+                            (format!(" › {st}"))
+                        }
                     </a>
                     <span class="muted small">(format!(" {}/{} · {}", h.project_slug, h.path, h.variant))</span>
                     <p class="snippet">(Trusted(h.snippet_html()))</p>
@@ -117,6 +121,14 @@ async fn search(cx: &Cx) -> Result<impl View> {
             }
         </ol>
     })
+}
+
+fn search_hit_url(t: &str, h: &SearchHit) -> String {
+    let url = doc_url(t, &h.project_slug, &h.path, h.variant);
+    match &h.anchor {
+        Some(a) if a != solidate_app::core::markdown::PREAMBLE_ANCHOR => format!("{url}#{a}"),
+        _ => url,
+    }
 }
 
 /// `llms.txt` for signed-in browser sessions; the same index as the API route.

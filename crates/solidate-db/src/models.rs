@@ -173,14 +173,22 @@ pub struct Backlink {
     pub target_anchor: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
+/// One search result: a matching section, or a document matching only through
+/// its title or path (`anchor` `None`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchHit {
     pub document_id: DocumentId,
     pub project_slug: String,
     pub path: String,
+    /// Document title.
     pub title: Option<String>,
     pub variant: Variant,
+    /// Document rank.
     pub rank: f32,
+    pub anchor: Option<String>,
+    pub section_title: Option<String>,
+    /// Semantic hash of the section alone (`section_hash` for a section write).
+    pub section_hash: Option<Hash>,
     /// `ts_headline` output, unescaped. Matches are delimited by
     /// [`SNIPPET_START`] and [`SNIPPET_END`]; use [`SearchHit::snippet_html`] for HTML.
     pub snippet: String,
@@ -281,6 +289,9 @@ mod tests {
             title: None,
             variant: Variant::Human,
             rank: 1.0,
+            anchor: None,
+            section_title: None,
+            section_hash: None,
             snippet: format!("<script>{SNIPPET_START}rotated{SNIPPET_END} & \"x\""),
         };
         assert_eq!(

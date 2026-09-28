@@ -4,12 +4,12 @@
 use std::collections::HashMap;
 
 use serde_json::json;
-use solidate_core::markdown::source_bindings;
+use solidate_core::markdown::{analyze, source_bindings};
 use solidate_core::sources::{
     Delta, DriftState, Files, SourceBinding, SourcePattern, classify, matched, merge_bindings, missing, parse_patterns,
     validate_file,
 };
-use solidate_core::{DocPath, Variant};
+use solidate_core::{DocPath, Hash, Variant};
 use solidate_db::{DocumentId, SourceSnapshot, TenantTx};
 use time::OffsetDateTime;
 
@@ -89,6 +89,29 @@ pub struct AffectedSection {
     pub section_title: String,
     /// The queried paths the section's patterns match.
     pub paths: Vec<String>,
+}
+
+/// A bound section with its content, for reading before changing the files it
+/// describes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SectionContext {
+    pub path: String,
+    pub document_title: Option<String>,
+    pub anchor: String,
+    pub section_title: String,
+    /// The variant `content` comes from.
+    pub variant: Variant,
+    /// Section Markdown, starting with its heading line (without subsections).
+    pub content: String,
+    /// Semantic hash of the section (`section_hash` for a section write).
+    pub hash: Hash,
+    /// Content hash of the variant (`base_hash` for a document write).
+    pub content_hash: Hash,
+    /// The queried paths the section's patterns match.
+    pub paths: Vec<String>,
+    /// Internal link targets in the section (`project:path#anchor`), to follow for
+    /// related context such as decision records.
+    pub links: Vec<String>,
 }
 
 struct DocBindings {
@@ -280,6 +303,78 @@ impl App {
                         paths: hits,
                     });
                 }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Bound sections of `project`'s own documents whose patterns match any of
+    /// `paths`, with their content: the `prefer` variant, or the other variant when
+    /// the section exists only there. Needs no source report.
+    pub async fn section_context(
+        &self,
+        ctx: &Ctx,
+        project: &str,
+        paths: &[String],
+        prefer: Variant,
+    ) -> Result<Vec<SectionContext>> {
+        for path in paths {
+            validate_file(path, "-").map_err(invalid)?;
+        }
+        let mut tx = self.tx(ctx).await?;
+        let p = project_by_slug(&mut tx, project).await?;
+        ctx.require(Access::Read, Some(&p))?;
+        let mut out = Vec::new();
+        for d in tx.documents(p.id).await? {
+            let DocBindings { bindings, .. } = doc_bindings(&mut tx, d.id).await?;
+            let bound: Vec<(SourceBinding, Vec<String>)> = bindings
+                .into_iter()
+                .filter_map(|b| {
+                    let patterns = parse_patterns(&b.patterns);
+                    let hits: Vec<String> = paths
+                        .iter()
+                        .filter(|path| patterns.iter().any(|p| p.matches(path)))
+                        .cloned()
+                        .collect();
+                    (!hits.is_empty()).then_some((b, hits))
+                })
+                .collect();
+            if bound.is_empty() {
+                continue;
+            }
+            let base = DocPath::parse(&d.path).ok();
+            let mut heads = Vec::new();
+            for variant in [prefer, prefer.other()] {
+                if let Some(h) = tx.head(d.id, variant).await? {
+                    let a = analyze(&h.content, base.as_ref());
+                    heads.push((h, a));
+                }
+            }
+            for (b, hits) in bound {
+                let Some((head, section)) = heads.iter().find_map(|(h, a)| a.section(&b.anchor).map(|s| (h, s))) else {
+                    continue;
+                };
+                let links = analyze(&section.body, base.as_ref())
+                    .links
+                    .iter()
+                    .filter(|t| t.path.is_some())
+                    .map(|t| match &t.project {
+                        Some(_) => t.to_string(),
+                        None => format!("{}:{t}", p.slug),
+                    })
+                    .collect();
+                out.push(SectionContext {
+                    path: d.path.clone(),
+                    document_title: d.title.clone(),
+                    anchor: section.anchor.clone(),
+                    section_title: section.title.clone(),
+                    variant: head.variant,
+                    content: section.body.clone(),
+                    hash: section.hash,
+                    content_hash: head.content_hash,
+                    paths: hits,
+                    links,
+                });
             }
         }
         Ok(out)

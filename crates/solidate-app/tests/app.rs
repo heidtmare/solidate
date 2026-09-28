@@ -2,7 +2,7 @@
 
 use solidate_app::core::{DocPath, Hash, Role, Scope, SectionTarget, Slug, SyncState, Variant};
 use solidate_app::db::{Db, Expect};
-use solidate_app::{App, AppError, Config, Ctx, PutDoc, PutResult, PutSection};
+use solidate_app::{App, AppError, Changes, Config, Ctx, PutDoc, PutResult, PutSection};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 async fn setup(pool: PgPoolOptions, opts: PgConnectOptions) -> (App, Ctx) {
@@ -1118,4 +1118,146 @@ async fn section_context_prefers_variant_and_lists_links(pool: PgPoolOptions, op
             .await
             .is_err()
     );
+}
+
+/// `changes` until `done` holds. The window's upper bound is cluster-wide, so
+/// transactions of concurrent tests can delay visibility briefly.
+async fn changes_until(app: &App, ctx: &Ctx, project: &str, since: &str, done: impl Fn(&Changes) -> bool) -> Changes {
+    for _ in 0..200 {
+        let c = app.changes(ctx, project, Some(since)).await.unwrap();
+        if done(&c) {
+            return c;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("changes did not appear");
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn change_feed(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let start = app.changes(&ctx, "app", None).await.unwrap();
+    assert!(start.documents.is_empty());
+    let t0 = time::OffsetDateTime::now_utc() - time::Duration::seconds(5);
+
+    let v1 = "# Guide\n\n## Keep\n\nSame.\n\n## Edit\n\nOld.\n\n## Drop\n\nGone soon.\n";
+    put(&app, &ctx, "app", "guide", Variant::Human, v1, Expect::Absent, &[])
+        .await
+        .unwrap();
+    put(
+        &app,
+        &ctx,
+        "shared",
+        "rules",
+        Variant::Human,
+        "# Rules\n\nBe brief.\n",
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    let c = changes_until(&app, &ctx, "app", &start.cursor, |c| c.documents.len() == 2).await;
+    let paths: Vec<_> = c
+        .documents
+        .iter()
+        .map(|d| (d.path.as_str(), d.owner.as_str(), d.inherited, d.created))
+        .collect();
+    assert_eq!(paths, [("guide", "app", false, true), ("rules", "shared", true, true)]);
+    assert_eq!(c.documents[0].variants[0].added, ["guide", "keep", "edit", "drop"]);
+    assert_eq!(c.documents[0].variants[0].authors[0].kind, "system");
+    // The parent project does not see the child's documents.
+    let s = changes_until(&app, &ctx, "shared", &start.cursor, |c| !c.documents.is_empty()).await;
+    assert_eq!(s.documents.len(), 1);
+
+    // Net section changes across two revisions.
+    let mid = c.cursor.clone();
+    let v2 = "# Guide\n\n## Keep\n\nSame.\n\n## Edit\n\nNew.\n\n## Drop\n\nGone soon.\n";
+    let v3 = "# Guide\n\n## Keep\n\nSame.\n\n## Edit\n\nNewer.\n\n## Added\n\nHello.\n";
+    put(&app, &ctx, "app", "guide", Variant::Human, v2, Expect::Any, &[])
+        .await
+        .unwrap();
+    put(&app, &ctx, "app", "guide", Variant::Human, v3, Expect::Any, &[])
+        .await
+        .unwrap();
+    let c = changes_until(&app, &ctx, "app", &mid, |c| {
+        c.documents.first().is_some_and(|d| d.variants[0].revisions == 2)
+    })
+    .await;
+    assert_eq!(c.documents.len(), 1);
+    let d = &c.documents[0];
+    assert!(!d.created && !d.deleted);
+    let v = &d.variants[0];
+    assert_eq!((v.variant, v.content_hash), (Variant::Human, Hash::of(v3)));
+    assert_eq!(
+        (v.added.as_slice(), v.changed.as_slice(), v.removed.as_slice()),
+        (
+            &["added".to_string()][..],
+            &["edit".to_string()][..],
+            &["drop".to_string()][..]
+        )
+    );
+
+    // An override shadows the inherited document; deleting reports the path.
+    let mid = c.cursor.clone();
+    put(
+        &app,
+        &ctx,
+        "shared",
+        "rules",
+        Variant::Human,
+        "# Rules\n\nShorter.\n",
+        Expect::Any,
+        &[],
+    )
+    .await
+    .unwrap();
+    put(
+        &app,
+        &ctx,
+        "app",
+        "rules",
+        Variant::Human,
+        "# Rules\n\nApp.\n",
+        Expect::Any,
+        &[],
+    )
+    .await
+    .unwrap();
+    app.delete_doc(&ctx, "app", &path("guide")).await.unwrap();
+    let c = changes_until(&app, &ctx, "app", &mid, |c| c.documents.len() == 2).await;
+    let got: Vec<_> = c
+        .documents
+        .iter()
+        .map(|d| {
+            (
+                d.path.as_str(),
+                d.owner.as_str(),
+                d.created,
+                d.deleted,
+                d.variants.len(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        got,
+        [("guide", "app", false, true, 0), ("rules", "app", true, false, 1)]
+    );
+
+    // Nothing new after the last cursor; a timestamp covers everything since then.
+    let last = app.changes(&ctx, "app", Some(&c.cursor)).await.unwrap();
+    assert!(last.documents.is_empty());
+    let all = app
+        .changes(
+            &ctx,
+            "app",
+            Some(&t0.format(&time::format_description::well_known::Rfc3339).unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(all.documents.len(), 2);
+    assert!(all.documents.iter().all(|d| d.created));
+    assert!(matches!(
+        app.changes(&ctx, "app", Some("yesterday")).await,
+        Err(AppError::Invalid(_))
+    ));
 }

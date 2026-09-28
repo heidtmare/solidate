@@ -669,6 +669,7 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
         "affected_sections",
         "context_for_paths",
         "verify_sources",
+        "changes_since",
     ] {
         assert!(names.contains(&n), "missing tool {n}");
     }
@@ -839,6 +840,55 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
     )
     .await;
     assert!(err && out.contains("forbidden"), "{out}");
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn changes_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, router, rw, _) = setup(pool, opts).await;
+    let (err, text) = tool(&router, &rw, "changes_since", serde_json::json!({"project": "app"})).await;
+    assert!(!err, "{text}");
+    let cursor = serde_json::from_str::<Value>(&text).unwrap()["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let api = Api { router, auth: rw };
+    let r = api
+        .req(
+            "PUT",
+            "/api/v1/projects/app/docs/guide?message=init",
+            &[("content-type", "text/markdown"), ("if-none-match", "*")],
+            Some("# Guide\n\n## Setup\n\nRun it.\n"),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+
+    // Visibility can lag while concurrent tests hold transactions open.
+    let uri = format!("/api/v1/projects/app/changes?since={cursor}");
+    let mut j = Value::Null;
+    for _ in 0..200 {
+        let r = api.req("GET", &uri, &[], None).await;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        j = r.json();
+        if !j["documents"].as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let d = &j["documents"][0];
+    assert_eq!(
+        (d["path"].as_str(), d["created"].as_bool()),
+        (Some("guide"), Some(true))
+    );
+    let v = &d["variants"][0];
+    assert_eq!(v["added"], serde_json::json!(["guide", "setup"]));
+    assert_eq!(v["messages"], serde_json::json!(["init"]));
+    assert_eq!(v["authors"], serde_json::json!([{"kind": "token", "name": "rw"}]));
+
+    let r = api
+        .req("GET", "/api/v1/projects/app/changes?since=soon", &[], None)
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
 }
 
 #[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]

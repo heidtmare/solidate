@@ -180,6 +180,28 @@ async fn root_hash_inner(cx: &Cx) -> ApiResult {
 }
 
 #[query_params]
+struct ChangesQuery {
+    /// Cursor from a previous response or an RFC 3339 timestamp.
+    since: Option<String>,
+}
+
+/// Net changes to the project's effective documents since `since`. Without it,
+/// returns only `cursor`.
+#[route(GET "/api/v1/projects/{project}/changes")]
+async fn api_changes(cx: &Cx) -> Result<Response> {
+    finish(changes_inner(cx).await)
+}
+
+async fn changes_inner(cx: &Cx) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let q = query_params::<ChangesQuery>(cx).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let changes = app(cx)
+        .changes(&ctx, path_param_segment(cx, "project"), q.since.as_deref())
+        .await?;
+    Ok(json(StatusCode::OK, &changes))
+}
+
+#[query_params]
 struct SearchQuery {
     q: Option<String>,
     project: Option<String>,

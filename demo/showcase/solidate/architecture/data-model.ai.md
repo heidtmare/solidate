@@ -18,14 +18,14 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 |---|---|---|
 | `memberships` | `(tenant_id, user_id)`, `role` | `reader\|editor\|admin` |
 | `projects` | `id`, `slug` (unique per tenant), `parent_id`, `settings` jsonb | parent FK `ON DELETE RESTRICT`; no self-parent |
-| `documents` | `id`, `project_id`, `path`, `title`, `sync_enabled`, `deleted_at` | soft delete; unique `(tenant_id, project_id, path) WHERE deleted_at IS NULL` |
+| `documents` | `id`, `project_id`, `path`, `title`, `sync_enabled`, `deleted_at`, `xid`, `deleted_xid` | soft delete; unique `(tenant_id, project_id, path) WHERE deleted_at IS NULL`; `xid8` columns for [[reference/rest-api#changes]] |
 
 ## Revisions and heads {#revisions}
 
 | table | key columns | notes |
 |---|---|---|
 | `blobs` | `(tenant_id, hash)`, `content`, `byte_len` | content-addressed; dedup |
-| `revisions` | `id`, `document_id`, `variant`, `content_hash`, `semantic_hash`, `parent_id`, `author_user_id` \| `author_token_id`, `message` | index `(document_id, variant, created_at DESC)` |
+| `revisions` | `id`, `document_id`, `variant`, `content_hash`, `semantic_hash`, `parent_id`, `author_user_id` \| `author_token_id`, `message`, `xid` | index `(document_id, variant, created_at DESC)`; `xid`: writing transaction, change-feed window key |
 | `heads` | `(tenant_id, document_id, variant)`, `revision_id`, `content_hash`, `title`, `search` tsvector | GIN index on `search` |
 | `sections` | `(revision_id, ordinal)`, `anchor`, `title`, `level`, `parent_anchor`, `hash` | per revision; bodies sliced from blob |
 | `links` | `(document_id, variant, ordinal)`, `target_project`, `target_path`, `target_anchor` | per head; backlinks; `target_project NULL` = own project |

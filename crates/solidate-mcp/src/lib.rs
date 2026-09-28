@@ -53,7 +53,9 @@ call affected_sections with the changed paths and update the sections it returns
 sections whose files changed since they were last verified (or were never verified); `git diff \
 <verified_revision> -- <changed paths>` shows what changed. Fix the section (then translate it as usual) or, if \
 it is still accurate, call verify_sources. Drift is computed against file hashes reported with report_sources \
-(git blob ids, e.g. from `git ls-files -s`), usually by CI.";
+(git blob ids, e.g. from `git ls-files -s`), usually by CI.\n\n\
+changes_since lists the documents changed since a cursor from a previous call or a timestamp, with the section \
+anchors added, changed and removed per variant. Keep the returned cursor to continue from it next time.";
 
 type ToolResult = Result<CallToolResult, McpError>;
 
@@ -129,6 +131,14 @@ fn parse_variant(v: Option<&str>) -> Result<Variant, AppError> {
 pub struct ProjectArg {
     /// Project slug.
     pub project: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ChangesArgs {
+    pub project: String,
+    /// `cursor` from a previous changes_since response, or an RFC 3339 timestamp.
+    /// Omit to get a cursor for the current point without changes.
+    pub since: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -718,6 +728,16 @@ impl SolidateMcp {
         };
         ok(json!(try_app!(
             self.app.section_context(&ctx, &a.project, &a.paths, prefer).await
+        )))
+    }
+
+    #[tool(
+        description = "Documents changed since a cursor or RFC 3339 timestamp: per variant, the section anchors added, changed and removed, the authors and revision messages; plus created and deleted documents. Store the returned cursor and pass it as since next time."
+    )]
+    async fn changes_since(&self, Parameters(a): Parameters<ChangesArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        ok(json!(try_app!(
+            self.app.changes(&ctx, &a.project, a.since.as_deref()).await
         )))
     }
 

@@ -9,6 +9,7 @@
 //! Queries use runtime-checked `sqlx::query*` functions.
 
 mod audit;
+mod changes;
 mod documents;
 mod global;
 mod ids;
@@ -26,6 +27,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Executor, PgPool, Postgres, Transaction};
 
 pub use audit::NewAudit;
+pub use changes::{ChangeRevision, ChangeWindow, ChangedDocument};
 pub use documents::{Author, Expect, NewRevision};
 pub use ids::*;
 pub use models::*;

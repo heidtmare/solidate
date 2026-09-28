@@ -35,6 +35,11 @@ outline of every revision, including each section's anchor, level, parent and
 semantic hash; section bodies are sliced from the blob on demand. `links` stores
 the outgoing links of each head for backlinks.
 
+Revisions and documents record the id of the transaction that wrote them
+(`xid`), and deleted documents the id of the deleting one (`deleted_xid`). The
+change feed reads by transaction id, so it never misses a transaction that
+commits after a later one; see [[reference/rest-api#changes]].
+
 ## Sync and proposals {#sync}
 
 `sync_bases` holds, per document and anchor, the semantic hash each side had at

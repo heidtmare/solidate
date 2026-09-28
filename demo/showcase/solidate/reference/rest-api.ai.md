@@ -75,6 +75,14 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 | GET | `/search` | `q` (websearch syntax), `project`, `variant` (both if absent), `limit` (default 20) -> `[{project, path, variant, title, anchor, section_title, section_hash, rank, snippet}]`; one hit per matching section; `anchor` null = title/path match only |
 | GET | `/projects/{p}/llms.txt` | `text/plain`; links AI variant raw Markdown (human if no AI) |
 
+## Change feed {#changes}
+
+- `GET /projects/{p}/changes?since=<cursor|RFC 3339>` -> `{cursor, documents: [{path, title, owner, inherited, created, deleted, variants: [{variant, revisions, content_hash, added, changed, removed, authors: [{kind, name}], messages, updated_at}]}]}`; ordered by path.
+- no `since` -> `{cursor, documents: []}`. Invalid `since` -> 400.
+- covers own + inherited docs; override written in window -> `created`, inherited entry omitted. `deleted` -> `variants: []`.
+- anchors: semantic-hash diff of revision before window vs last in window; formatting-only -> empty lists.
+- cursor = `pg_snapshot_xmin` bound: no change skipped on late commit; long-running transactions delay visibility. Next call: pass response `cursor`.
+
 ## Sync and proposals {#sync}
 
 | method | path | notes |

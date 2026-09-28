@@ -92,11 +92,14 @@ impl TenantTx {
     }
 
     pub async fn delete_document(&mut self, id: DocumentId) -> Result<()> {
-        let n = sqlx::query("UPDATE documents SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL")
-            .bind(id)
-            .execute(self.conn())
-            .await?
-            .rows_affected();
+        let n = sqlx::query(
+            "UPDATE documents SET deleted_at = now(), deleted_xid = pg_current_xact_id()
+             WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .execute(self.conn())
+        .await?
+        .rows_affected();
         if n == 0 { Err(DbError::NotFound) } else { Ok(()) }
     }
 

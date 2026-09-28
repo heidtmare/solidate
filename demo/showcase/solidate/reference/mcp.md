@@ -55,11 +55,16 @@ translation workflow, so the agent does not need a custom prompt. The
 | `affected_sections` | Sections that describe the given repository paths |
 | `context_for_paths` | The same sections with their content, for reading before a code change |
 | `verify_sources` | Confirm sections still match their source files |
+| `changes_since` | Documents and section anchors changed since a cursor or timestamp |
 
 Tools that take `variant` default to `human`, except `read_doc`, which reads
 the AI variant and falls back to the human variant when no AI variant exists.
 Its response names the variant read. Search covers both variants unless
 `variant` restricts it.
+
+An agent that runs on a schedule calls `changes_since` with the cursor it stored
+last time and keeps the new one; [[reference/rest-api#changes]] describes the
+response.
 
 ## Prompts {#prompts}
 

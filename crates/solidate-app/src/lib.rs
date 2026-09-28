@@ -3,6 +3,7 @@
 
 mod audit;
 mod auth;
+mod changes;
 mod ctx;
 mod docs;
 mod error;
@@ -16,6 +17,7 @@ mod sync;
 pub mod telemetry;
 
 pub use auth::{Credential, NewApiToken, TOKEN_PREFIX};
+pub use changes::{ChangeAuthor, Changes, DocChange, VariantChange};
 pub use ctx::{Access, Ctx, Grant, Level, Principal};
 pub use docs::{DocView, ExpandedDoc, PutDoc, PutResult, PutSection, PutSectionResult, RenderedDoc, Tree, TreeEntry};
 pub use error::{AppError, Result};

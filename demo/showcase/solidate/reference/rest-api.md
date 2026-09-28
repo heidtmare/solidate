@@ -82,6 +82,30 @@ covers the same operation for agents.
 | `GET /search?q=&project=&variant=&limit=` | Full-text search; one hit per matching section, with its anchor, hash and a highlighted snippet |
 | `GET /projects/{p}/llms.txt` | Plain-text index for language models |
 
+## Change feed {#changes}
+
+`GET /projects/{p}/changes?since=` lists the documents that changed in the
+project, including inherited ones, since `since`. That is either the `cursor`
+from a previous response or an RFC 3339 timestamp. Without `since` the response
+holds only a cursor, which a client stores to start from. Scheduled agents and
+bots use it to pick up where they stopped:
+
+```sh
+curl -H "Authorization: Bearer $SOLIDATE_TOKEN" \
+  "http://localhost:3000/api/v1/projects/solidate/changes?since=81234"
+```
+
+Each document entry says whether it was created or deleted in the window and,
+per variant, lists the section anchors added, changed and removed between the
+revision before the window and the last one in it, along with the authors and
+revision messages. Sections are compared by semantic hash, so formatting-only
+edits show up with empty lists. Writing an override of an inherited document
+counts as creating it, and the inherited entry is left out.
+
+The cursor is a database transaction bound. A change appears once every
+transaction that started before it has finished, so a slow commit is never
+skipped, but a long-running transaction delays the feed until it ends.
+
 ## Sync and proposals {#sync}
 
 | Method and path | Purpose |

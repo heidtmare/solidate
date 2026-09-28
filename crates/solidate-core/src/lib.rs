@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod diff;
+pub mod edit;
 pub mod hash;
 pub mod include;
 pub mod inherit;
@@ -14,6 +15,7 @@ mod sqlx_text;
 pub mod sync;
 
 pub use auth::{Role, Scope};
+pub use edit::{SectionTarget, Splice, SpliceError, splice_section};
 pub use hash::{Hash, Merkle};
 pub use links::LinkTarget;
 pub use markdown::{Analysis, Section, analyze, render_html};

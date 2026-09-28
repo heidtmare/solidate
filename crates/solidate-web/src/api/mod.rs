@@ -207,15 +207,22 @@ pub(crate) fn not_modified(cx: &Cx, current: Option<Hash>) -> Result<Option<Resp
 
 /// Write precondition from `If-Match` / `If-None-Match: *`.
 pub(crate) fn write_precondition(cx: &Cx) -> Result<Expect, ApiError> {
-    match (tags(cx, header::IF_MATCH)?, tags(cx, header::IF_NONE_MATCH)?) {
-        (Some(Tags::Any), None) => Ok(Expect::Any),
-        (Some(Tags::List(l)), None) if l.len() == 1 => Ok(Expect::Head(l[0])),
-        (None, Some(Tags::Any)) => Ok(Expect::Absent),
-        (None, None) => Err(ApiError::new(
+    optional_write_precondition(cx)?.ok_or_else(|| {
+        ApiError::new(
             StatusCode::PRECONDITION_REQUIRED,
             "precondition_required",
             "send If-Match with the current ETag, If-Match: *, or If-None-Match: * to create",
-        )),
+        )
+    })
+}
+
+/// [`write_precondition`], or `None` when neither header is sent.
+pub(crate) fn optional_write_precondition(cx: &Cx) -> Result<Option<Expect>, ApiError> {
+    match (tags(cx, header::IF_MATCH)?, tags(cx, header::IF_NONE_MATCH)?) {
+        (Some(Tags::Any), None) => Ok(Some(Expect::Any)),
+        (Some(Tags::List(l)), None) if l.len() == 1 => Ok(Some(Expect::Head(l[0]))),
+        (None, Some(Tags::Any)) => Ok(Some(Expect::Absent)),
+        (None, None) => Ok(None),
         _ => Err(ApiError::bad_request(
             "use either a single If-Match tag or If-None-Match: *",
         )),

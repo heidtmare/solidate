@@ -28,8 +28,9 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `project_hash` | `project` | Merkle root |
 | `project_index` | `project` | `llms.txt` text |
 | `search` | `query`, `project?`, `limit?` (20, max 100) | hits with snippets |
-| `read_doc` | `project`, `path`, `variant?`, `section?`, `expand?` | `content`, `content_hash`, outline w/ semantic hashes |
+| `read_doc` | `project`, `path`, `variant?`, `section?`, `subsections?`, `expand?` | `content`, `content_hash`, outline w/ semantic hashes; with `section`: that span's `hash` |
 | `write_doc` | `project`, `path`, `variant?`, `content`, `base_hash?`, `message?`, `resolves?` | `base_hash` required unless creating; inherited path -> override |
+| `write_section` | `project`, `path`, `variant?`, `anchor?` \| `after?`, `subsections?`, `content`, `section_hash?`, `base_hash?`, `message?`, `resolves?` | `{content_hash, changed, anchors, sync_pending}`; see [[#section-edits]] |
 | `backlinks` | `project`, `path` | |
 | `doc_history` | `project`, `path`, `variant?`, `limit?` (20) | newest first |
 | `get_sync_queue` | `project` | `stale_side` (`null` = conflict), `proposal` |
@@ -44,6 +45,21 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `verify_sources` | `project`, `path`, `anchors`, `revision?` | doc drift entries; `revision` != current report -> error |
 
 - `variant` default: `human`.
+
+## Editing one section {#section-edits}
+
+| target | args | precondition |
+|---|---|---|
+| replace | `anchor` (+ `subsections`) | `section_hash` (span `hash` from `read_doc`, same `subsections`, no `expand`) or `base_hash`; one required |
+| delete | `anchor`, `content: ""` | same as replace |
+| insert | `after` (inserted after that section + its subsections) | optional |
+| append | neither `anchor` nor `after` | optional; only target allowed when the variant is unwritten |
+
+- `section_hash`: fails only if the target span changed; `base_hash`: fails on any change.
+- `content` starts with the heading line. Inserted text without a leading heading -> rejected.
+- rest of the document kept byte-for-byte; edit changing another section's anchor (unclosed fence, duplicate heading) -> rejected.
+- response `anchors`: sections written. Keep heading text or `{#anchor}` to keep the variant pairing.
+- inherited path -> override; `resolves` as in `write_doc`.
 
 ## Errors {#errors}
 

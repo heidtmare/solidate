@@ -17,7 +17,7 @@ pub mod telemetry;
 
 pub use auth::{Credential, NewApiToken, TOKEN_PREFIX};
 pub use ctx::{Access, Ctx, Grant, Level, Principal};
-pub use docs::{DocView, ExpandedDoc, PutDoc, PutResult, RenderedDoc, Tree, TreeEntry};
+pub use docs::{DocView, ExpandedDoc, PutDoc, PutResult, PutSection, PutSectionResult, RenderedDoc, Tree, TreeEntry};
 pub use error::{AppError, Result};
 pub use oidc::{CALLBACK_PATH, Oidc, OidcConfig, OidcIdentity, OidcStart, PendingLogin};
 pub use proposals::{DEFAULT_GUIDE, GUIDE_PATH, ProposalRef, ProposalView, Propose, TranslationGuide};

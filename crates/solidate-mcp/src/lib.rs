@@ -15,16 +15,21 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData as McpError, ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use solidate_app::core::edit::span_hash;
 use solidate_app::core::sources::Files;
-use solidate_app::core::{DocPath, Hash, Variant, analyze};
+use solidate_app::core::{DocPath, Hash, SectionTarget, Variant, analyze};
 use solidate_app::db::Expect;
-use solidate_app::{App, AppError, Credential, Ctx, Propose, PutDoc, SourceReport};
+use solidate_app::{App, AppError, Credential, Ctx, Propose, PutDoc, PutSection, SourceReport};
 use time::format_description::well_known::Rfc3339;
 
 const INSTRUCTIONS: &str = "Solidate stores project documentation as one ground truth written twice: every document \
 has a human variant (narrative) and an AI variant (dense, structured). The variants are translations of each other, \
 paired by section anchors; they must state the same facts. Read with read_doc; write with write_doc, passing the \
 content_hash from your last read as base_hash (optimistic concurrency).\n\n\
+To change part of a document, prefer write_section: read the section with read_doc(section=anchor), then send only \
+its new Markdown with the section's `hash` as section_hash. Edits to other sections in the meantime do not conflict. \
+Keep the heading text (or an explicit `{#anchor}`) so the anchor, which pairs the section across variants, stays \
+the same.\n\n\
 When you change what a document says, change both variants: write the one you edited, then its translation with \
 write_doc, listing the translated section anchors in `resolves`.\n\n\
 To translate changes made by others: call get_translation_guide once per project, take sections from \
@@ -134,6 +139,9 @@ pub struct ReadDocArgs {
     pub variant: Option<String>,
     /// Return only the section with this anchor.
     pub section: Option<String>,
+    /// With `section`: include its subsections (the following deeper headings).
+    #[serde(default)]
+    pub subsections: bool,
     /// Expand `{{include}}` directives.
     #[serde(default)]
     pub expand: bool,
@@ -148,6 +156,34 @@ pub struct WriteDocArgs {
     /// Full Markdown content of the variant.
     pub content: String,
     /// `content_hash` of the variant as last read. Omit only when creating the variant.
+    pub base_hash: Option<String>,
+    /// Change note.
+    pub message: Option<String>,
+    /// Section anchors this write propagates; they are marked in sync afterwards.
+    #[serde(default)]
+    pub resolves: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct WriteSectionArgs {
+    pub project: String,
+    pub path: String,
+    /// `human` (default) or `ai`.
+    pub variant: Option<String>,
+    /// Anchor of the section to replace. Empty `content` deletes it.
+    pub anchor: Option<String>,
+    /// Instead of `anchor`: insert a new section after this section and its subsections.
+    /// Omit both to append at the end.
+    pub after: Option<String>,
+    /// With `anchor`: the section's subsections are replaced too.
+    #[serde(default)]
+    pub subsections: bool,
+    /// Markdown of the section, starting with its heading line.
+    pub content: String,
+    /// `hash` of the section as last read (read_doc with `section` and the same
+    /// `subsections`, without `expand`). Fails only if this section changed.
+    pub section_hash: Option<String>,
+    /// `content_hash` of the whole variant as last read. Fails if any part changed.
     pub base_hash: Option<String>,
     /// Change note.
     pub message: Option<String>,
@@ -333,7 +369,7 @@ impl SolidateMcp {
     }
 
     #[tool(
-        description = "Read one variant of a document, or one section of it. Returns content, content_hash (pass as base_hash when writing), and the section outline with semantic hashes."
+        description = "Read one variant of a document, or one section of it (optionally with its subsections). Returns content, content_hash (pass as base_hash when writing), and the section outline with semantic hashes. A section read returns that section's `hash` (pass as section_hash to write_section)."
     )]
     async fn read_doc(&self, Parameters(a): Parameters<ReadDocArgs>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
@@ -355,9 +391,18 @@ impl SolidateMcp {
             let Some(s) = analysis.section(anchor) else {
                 return fail(AppError::Invalid(format!("no section #{anchor} in {path}")));
             };
+            let target = SectionTarget::Section {
+                anchor,
+                subsections: a.subsections,
+            };
+            let body = match a.subsections {
+                true => analysis.section_tree_source(anchor).unwrap_or_default(),
+                false => s.body.clone(),
+            };
             return ok(json!({
                 "path": path.as_str(), "variant": variant, "content_hash": head.content_hash,
-                "anchor": s.anchor, "title": s.title, "hash": s.hash, "content": s.body,
+                "anchor": s.anchor, "title": s.title, "level": s.level,
+                "hash": span_hash(&analysis, target), "content": body,
             }));
         }
         let sections: Vec<Value> = analysis
@@ -414,6 +459,64 @@ impl SolidateMcp {
             "variant": variant,
             "content_hash": r.revision.content_hash,
             "changed": r.created,
+            "sync_pending": pending,
+        }))
+    }
+
+    #[tool(
+        description = "Replace, delete or insert one section of a document variant without resending the rest. Replace: `anchor` plus the section's new Markdown (heading included; empty content deletes it) and a precondition, section_hash (the section's `hash` from read_doc; other sections may change meanwhile) or base_hash (the variant's content_hash). Insert: `after` an anchor, or neither to append; preconditions optional. Rejected if the edit would change other sections' anchors (e.g. an unclosed code fence) or inserted text lacks a leading heading. Returns the new content_hash and the anchors written."
+    )]
+    async fn write_section(&self, Parameters(a): Parameters<WriteSectionArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let path = try_app!(parse_path(&a.path));
+        let variant = try_app!(parse_variant(a.variant.as_deref()));
+        let target = match (a.anchor.as_deref(), a.after.as_deref()) {
+            (Some(anchor), None) => SectionTarget::Section {
+                anchor,
+                subsections: a.subsections,
+            },
+            (None, Some(after)) => SectionTarget::After(after),
+            (None, None) => SectionTarget::End,
+            (Some(_), Some(_)) => return fail(AppError::Invalid("pass either anchor or after".into())),
+        };
+        let base = try_app!(parse_hash(a.base_hash.as_deref()));
+        let section_hash = try_app!(parse_hash(a.section_hash.as_deref()));
+        if matches!(target, SectionTarget::Section { .. }) && base.is_none() && section_hash.is_none() {
+            return fail(AppError::Invalid(
+                "replacing a section requires section_hash or base_hash".into(),
+            ));
+        }
+        let r = try_app!(
+            self.app
+                .put_section(
+                    &ctx,
+                    PutSection {
+                        project: &a.project,
+                        path: &path,
+                        variant,
+                        target,
+                        content: &a.content,
+                        expect: base.map_or(Expect::Any, Expect::Head),
+                        section_hash,
+                        message: a.message.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+                        resolves: &a.resolves,
+                    },
+                )
+                .await
+        );
+        let pending: Vec<Value> = r
+            .put
+            .sync
+            .iter()
+            .filter(|s| s.state.needs_attention())
+            .map(|s| json!({ "anchor": s.anchor, "state": s.state, "stale_side": s.state.stale_side() }))
+            .collect();
+        ok(json!({
+            "path": r.put.document.path,
+            "variant": variant,
+            "content_hash": r.put.revision.content_hash,
+            "changed": r.put.created,
+            "anchors": r.anchors,
             "sync_pending": pending,
         }))
     }

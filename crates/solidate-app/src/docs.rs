@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 use solidate_core::diff::unified;
+use solidate_core::edit::{SectionTarget, splice_section};
 use solidate_core::include::{DEFAULT_MAX_DEPTH, Dependency, expand_includes};
 use solidate_core::markdown::OutlineEntry;
 use solidate_core::{DocPath, Hash, LinkTarget, Merkle, Variant, analyze, render_html};
@@ -55,6 +56,31 @@ pub struct PutResult {
     pub created: bool,
     /// Sync plan after the write. Empty when sync is disabled for the document.
     pub sync: Vec<solidate_core::sync::SectionSync>,
+}
+
+/// A write of one section of a variant; see [`App::put_section`].
+pub struct PutSection<'a> {
+    pub project: &'a str,
+    pub path: &'a DocPath,
+    pub variant: Variant,
+    pub target: SectionTarget<'a>,
+    /// Markdown of the section, starting with its heading. Empty deletes the target
+    /// section.
+    pub content: &'a str,
+    /// Precondition on the whole variant.
+    pub expect: Expect,
+    /// Precondition on the target section only: its semantic hash as last read
+    /// (`hash` in section outlines). Concurrent edits to other sections still pass.
+    pub section_hash: Option<Hash>,
+    pub message: Option<&'a str>,
+    pub resolves: &'a [String],
+}
+
+#[derive(Debug, Clone)]
+pub struct PutSectionResult {
+    pub put: PutResult,
+    /// Anchors of the sections written, in document order.
+    pub anchors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +266,68 @@ impl App {
             created,
             sync,
         })
+    }
+
+    /// Replaces, deletes or inserts one section of a variant, leaving the rest of its
+    /// source unchanged. The splice and write happen in one transaction against the
+    /// head read in it. Writing an inherited document creates an override. A missing
+    /// variant can only be created with [`SectionTarget::End`].
+    pub async fn put_section(&self, ctx: &Ctx, req: PutSection<'_>) -> Result<PutSectionResult> {
+        let mut tx = self.tx(ctx).await?;
+        let p = project_by_slug(&mut tx, req.project).await?;
+        ctx.require(Access::Write, Some(&p))?;
+        if req.section_hash.is_some() && !matches!(req.target, SectionTarget::Section { .. }) {
+            return Err(invalid("section_hash applies only when replacing a section"));
+        }
+        let chain = tx.project_chain(p.id).await?;
+        let head = match resolve(&mut tx, &chain, req.path).await? {
+            Some((_, d)) => tx.head(d.id, req.variant).await?,
+            None => None,
+        };
+        let current = head.as_ref().map(|h| h.content_hash);
+        match (req.expect, current) {
+            (Expect::Head(h), Some(c)) if h != c => return Err(AppError::PreconditionFailed { current }),
+            (Expect::Head(_), None) | (Expect::Absent, Some(_)) => {
+                return Err(AppError::PreconditionFailed { current });
+            }
+            _ => {}
+        }
+        let (content, anchors, expect) = match &head {
+            Some(h) => {
+                let s = splice_section(&h.content, req.target, req.content).map_err(invalid)?;
+                if req.section_hash.is_some_and(|x| s.replaced_hash != Some(x)) {
+                    return Err(AppError::PreconditionFailed { current });
+                }
+                (s.content, s.anchors, Expect::Head(h.content_hash))
+            }
+            None if req.target == SectionTarget::End => {
+                let s = splice_section("", req.target, req.content).map_err(invalid)?;
+                (s.content, s.anchors, Expect::Absent)
+            }
+            None => {
+                return Err(invalid(format!(
+                    "the {} variant of {} has not been written",
+                    req.variant, req.path
+                )));
+            }
+        };
+        let put = self
+            .put_doc_tx(
+                &mut tx,
+                ctx,
+                PutDoc {
+                    project: req.project,
+                    path: req.path,
+                    variant: req.variant,
+                    content: &content,
+                    expect,
+                    message: req.message,
+                    resolves: req.resolves,
+                },
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(PutSectionResult { put, anchors })
     }
 
     /// Deletes the document owned by `project`. Inherited documents cannot be deleted

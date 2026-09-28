@@ -1,8 +1,8 @@
 //! Service-level integration tests. Require `DATABASE_URL`; see `.env.example`.
 
-use solidate_app::core::{DocPath, Hash, Role, Scope, Slug, SyncState, Variant};
+use solidate_app::core::{DocPath, Hash, Role, Scope, SectionTarget, Slug, SyncState, Variant};
 use solidate_app::db::{Db, Expect};
-use solidate_app::{App, AppError, Config, Ctx, PutDoc, PutResult};
+use solidate_app::{App, AppError, Config, Ctx, PutDoc, PutResult, PutSection};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 async fn setup(pool: PgPoolOptions, opts: PgConnectOptions) -> (App, Ctx) {
@@ -275,6 +275,118 @@ async fn sync_flow(pool: PgPoolOptions, opts: PgConnectOptions) {
     .unwrap();
     app.set_doc_sync(&ctx, "app", &path("notes"), false).await.unwrap();
     assert!(app.sync_queue(&ctx, "app").await.unwrap().is_empty());
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn section_writes(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let human = "# Auth\n\nTokens are opaque.\n\n## Expiry\n\nSessions last 14 days.\n";
+    let ai = "# Auth\n\n- tokens: opaque\n\n## Expiry\n\n- session_ttl: 14d\n";
+    put(&app, &ctx, "shared", "auth", Variant::Human, human, Expect::Absent, &[])
+        .await
+        .unwrap();
+    put(&app, &ctx, "shared", "auth", Variant::Ai, ai, Expect::Absent, &[])
+        .await
+        .unwrap();
+    let section = |variant, target, content, expect, section_hash, resolves: &'static [&'static str]| {
+        let (app, ctx) = (&app, &ctx);
+        async move {
+            let resolves: Vec<String> = resolves.iter().map(|s| s.to_string()).collect();
+            app.put_section(
+                ctx,
+                PutSection {
+                    project: "shared",
+                    path: &path("auth"),
+                    variant,
+                    target,
+                    content,
+                    expect,
+                    section_hash,
+                    message: None,
+                    resolves: &resolves,
+                },
+            )
+            .await
+        }
+    };
+    let expiry = SectionTarget::Section {
+        anchor: "expiry",
+        subsections: false,
+    };
+    let old = solidate_app::core::markdown::semantic_hash("## Expiry\n\nSessions last 14 days.\n");
+
+    let r = section(
+        Variant::Human,
+        expiry,
+        "## Expiry\n\nSessions last 30 days.",
+        Expect::Any,
+        Some(old),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.anchors, ["expiry"]);
+    let states: Vec<_> = r.put.sync.iter().map(|s| (s.anchor.as_str(), s.state)).collect();
+    assert_eq!(states, [("auth", SyncState::InSync), ("expiry", SyncState::HumanAhead)]);
+    let v = app
+        .get_doc(&ctx, "shared", &path("auth"), Variant::Human)
+        .await
+        .unwrap();
+    assert_eq!(v.head.unwrap().content, human.replace("14 days", "30 days"));
+
+    // The old section hash no longer matches.
+    assert!(matches!(
+        section(Variant::Human, expiry, "## Expiry\n\nx", Expect::Any, Some(old), &[]).await,
+        Err(AppError::PreconditionFailed { current: Some(_) })
+    ));
+
+    // Translating one section and resolving it clears the queue.
+    section(
+        Variant::Ai,
+        expiry,
+        "## Expiry\n\n- session_ttl: 30d\n",
+        Expect::Head(Hash::of(ai)),
+        None,
+        &["expiry"],
+    )
+    .await
+    .unwrap();
+    assert!(app.sync_queue(&ctx, "shared").await.unwrap().is_empty());
+
+    // Missing variants can only be created by appending; inherited documents are
+    // overridden in the writing project.
+    let r = app
+        .put_section(
+            &ctx,
+            PutSection {
+                project: "app",
+                path: &path("auth"),
+                variant: Variant::Human,
+                target: SectionTarget::After("auth"),
+                content: "# Local\n\nApp only.\n",
+                expect: Expect::Any,
+                section_hash: None,
+                message: None,
+                resolves: &[],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.anchors, ["local"]);
+    let v = app.get_doc(&ctx, "app", &path("auth"), Variant::Human).await.unwrap();
+    assert!(!v.inherited() && v.head.unwrap().content.ends_with("30 days.\n\n# Local\n\nApp only.\n"));
+    assert!(matches!(
+        section(
+            Variant::Human,
+            SectionTarget::After("nope"),
+            "# X\n",
+            Expect::Any,
+            None,
+            &[]
+        )
+        .await,
+        Err(AppError::Invalid(_))
+    ));
 }
 
 #[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]

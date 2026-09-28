@@ -24,8 +24,10 @@ use time::format_description::well_known::Rfc3339;
 
 const INSTRUCTIONS: &str = "Solidate stores project documentation as one ground truth written twice: every document \
 has a human variant (narrative) and an AI variant (dense, structured). The variants are translations of each other, \
-paired by section anchors; they must state the same facts. Read with read_doc; write with write_doc, passing the \
-content_hash from your last read as base_hash (optimistic concurrency).\n\n\
+paired by section anchors; they must state the same facts. Find sections with search (each hit carries the \
+section's anchor and section_hash; pass variant \"ai\" to search the reference variant only). Read with read_doc, \
+which reads the AI variant unless you ask for another; write with write_doc, passing the content_hash from your \
+last read as base_hash (optimistic concurrency).\n\n\
 To change part of a document, prefer write_section: read the section with read_doc(section=anchor), then send only \
 its new Markdown with the section's `hash` as section_hash. Edits to other sections in the meantime do not conflict. \
 Keep the heading text (or an explicit `{#anchor}`) so the anchor, which pairs the section across variants, stays \
@@ -38,7 +40,8 @@ variant with propose_translation. A person reviews and accepts proposals. Use re
 does not change meaning (typos, formatting) so no translation is needed.\n\n\
 Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.\n\n\
 Sections can declare the repository files they describe with an HTML comment on its own lines, \
-`<!-- sources: path/file.rs, dir/, src/**/*.sql -->` (paths relative to the repository root). After changing code, \
+`<!-- sources: path/file.rs, dir/, src/**/*.sql -->` (paths relative to the repository root). Before changing code, \
+call context_for_paths with the files you will touch to read the sections that describe them. After changing code, \
 call affected_sections with the changed paths and update the sections it returns. get_drift_queue lists bound \
 sections whose files changed since they were last verified (or were never verified); `git diff \
 <verified_revision> -- <changed paths>` shows what changed. Fix the section (then translate it as usual) or, if \
@@ -126,6 +129,8 @@ pub struct SearchArgs {
     pub query: String,
     /// Limit to one project.
     pub project: Option<String>,
+    /// Limit to one variant: `human` or `ai`. Omit for both.
+    pub variant: Option<String>,
     /// Maximum results (default 20, max 100).
     pub limit: Option<i64>,
 }
@@ -135,7 +140,7 @@ pub struct ReadDocArgs {
     pub project: String,
     /// Document path, e.g. `design/auth`.
     pub path: String,
-    /// `human` (default) or `ai`.
+    /// `human` or `ai`. Default: `ai`, or `human` when no AI variant exists.
     pub variant: Option<String>,
     /// Return only the section with this anchor.
     pub section: Option<String>,
@@ -270,6 +275,16 @@ pub struct AffectedArgs {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct ContextArgs {
+    pub project: String,
+    /// Repository paths you are about to change (or are reading), relative to the
+    /// repository root.
+    pub paths: Vec<String>,
+    /// Preferred variant: `ai` (default) or `human`.
+    pub variant: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct VerifyArgs {
     pub project: String,
     pub path: String,
@@ -348,12 +363,18 @@ impl SolidateMcp {
         ok(json!({ "root_hash": tree.root_hash }))
     }
 
-    #[tool(description = "Full-text search across documents.")]
+    #[tool(
+        description = "Full-text search across documents. Each hit is one matching section: `anchor` and `section_hash` go straight to read_doc(section=anchor) and write_section(section_hash). `anchor` is null when only the document title or path matched. Filter with `variant: \"ai\"` for the dense reference variant."
+    )]
     async fn search(&self, Parameters(a): Parameters<SearchArgs>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
+        let variant = match a.variant.as_deref() {
+            None => None,
+            v => Some(try_app!(parse_variant(v))),
+        };
         let hits = try_app!(
             self.app
-                .search(&ctx, &a.query, a.project.as_deref(), a.limit.unwrap_or(20))
+                .search(&ctx, &a.query, a.project.as_deref(), variant, a.limit.unwrap_or(20))
                 .await
         );
         let out: Vec<Value> = hits
@@ -361,7 +382,8 @@ impl SolidateMcp {
             .map(|h| {
                 json!({
                     "project": h.project_slug, "path": h.path, "variant": h.variant,
-                    "title": h.title, "snippet": h.snippet_text(),
+                    "title": h.title, "anchor": h.anchor, "section_title": h.section_title,
+                    "section_hash": h.section_hash, "snippet": h.snippet_text(),
                 })
             })
             .collect();
@@ -369,13 +391,29 @@ impl SolidateMcp {
     }
 
     #[tool(
-        description = "Read one variant of a document, or one section of it (optionally with its subsections). Returns content, content_hash (pass as base_hash when writing), and the section outline with semantic hashes. A section read returns that section's `hash` (pass as section_hash to write_section)."
+        description = "Read one variant of a document, or one section of it (optionally with its subsections). Without `variant`, reads the AI variant, or the human variant when no AI variant exists; the response names the variant read. Returns content, content_hash (pass as base_hash when writing), and the section outline with semantic hashes. A section read returns that section's `hash` (pass as section_hash to write_section)."
     )]
     async fn read_doc(&self, Parameters(a): Parameters<ReadDocArgs>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);
         let path = try_app!(parse_path(&a.path));
-        let variant = try_app!(parse_variant(a.variant.as_deref()));
-        let e = try_app!(self.app.expanded_doc(&ctx, &a.project, &path, variant).await);
+        let (variant, e) = match a.variant.as_deref() {
+            None => {
+                let e = try_app!(self.app.expanded_doc(&ctx, &a.project, &path, Variant::Ai).await);
+                if e.view.head.is_some() {
+                    (Variant::Ai, e)
+                } else {
+                    let e = try_app!(self.app.expanded_doc(&ctx, &a.project, &path, Variant::Human).await);
+                    (Variant::Human, e)
+                }
+            }
+            v => {
+                let variant = try_app!(parse_variant(v));
+                (
+                    variant,
+                    try_app!(self.app.expanded_doc(&ctx, &a.project, &path, variant).await),
+                )
+            }
+        };
         let Some(head) = &e.view.head else {
             return fail(AppError::Invalid(format!(
                 "the {variant} variant of {path} has not been written"
@@ -639,6 +677,20 @@ impl SolidateMcp {
                 .await
         );
         ok(json!(s))
+    }
+
+    #[tool(
+        description = "Documentation for code: sections bound to any of `paths` via `<!-- sources: -->`, with their content (AI variant unless `variant` says otherwise), `hash` (section_hash for write_section), `content_hash`, and `links` to related documents such as decision records. Call before changing code to learn its design and constraints; needs no source report."
+    )]
+    async fn context_for_paths(&self, Parameters(a): Parameters<ContextArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let prefer = match a.variant.as_deref() {
+            None => Variant::Ai,
+            v => try_app!(parse_variant(v)),
+        };
+        ok(json!(try_app!(
+            self.app.section_context(&ctx, &a.project, &a.paths, prefer).await
+        )))
     }
 
     #[tool(

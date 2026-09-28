@@ -3,13 +3,14 @@
 
 use serde::Deserialize;
 use solidate_app::SourceReport;
+use solidate_app::core::Variant;
 use solidate_app::core::sources::Files;
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::response::Response;
 use topcoat::router::{StatusCode, path_param_segment, route};
 
-use super::{ApiError, ApiResult, api_ctx, doc_path, finish, json};
+use super::{ApiError, ApiResult, api_ctx, doc_path, finish, json, parse_variant};
 use crate::auth::app;
 
 fn parse<T: for<'de> Deserialize<'de>>(body: &str) -> Result<T, ApiError> {
@@ -97,6 +98,34 @@ async fn affected_inner(cx: &Cx, body: String) -> ApiResult {
         .affected_sections(&ctx, path_param_segment(cx, "project"), &b.paths)
         .await?;
     Ok(json(StatusCode::OK, &a))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContextBody {
+    paths: Vec<String>,
+    /// Preferred variant, `ai` (default) or `human`.
+    variant: Option<String>,
+}
+
+/// Bound sections whose patterns match any of `paths`, with their content.
+/// Body: JSON `{paths, variant?}`.
+#[route(POST "/api/v1/projects/{project}/context")]
+async fn api_context(cx: &Cx, body: String) -> Result<Response> {
+    finish(context_inner(cx, body).await)
+}
+
+async fn context_inner(cx: &Cx, body: String) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let b: ContextBody = parse(&body)?;
+    let prefer = match b.variant.as_deref() {
+        None => Variant::Ai,
+        v => parse_variant(v)?,
+    };
+    let c = app(cx)
+        .section_context(&ctx, path_param_segment(cx, "project"), &b.paths, prefer)
+        .await?;
+    Ok(json(StatusCode::OK, &c))
 }
 
 #[derive(Deserialize)]

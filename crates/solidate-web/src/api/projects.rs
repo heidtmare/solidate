@@ -9,7 +9,7 @@ use topcoat::context::{Cx, app_context};
 use topcoat::router::response::Response;
 use topcoat::router::{StatusCode, path_param_segment, query_params, route};
 
-use super::{ApiError, ApiResult, api_ctx, finish, json, not_modified, text, with_etag};
+use super::{ApiError, ApiResult, api_ctx, finish, json, not_modified, parse_variant, text, with_etag};
 use crate::WebConfig;
 use crate::auth::app;
 
@@ -183,6 +183,8 @@ async fn root_hash_inner(cx: &Cx) -> ApiResult {
 struct SearchQuery {
     q: Option<String>,
     project: Option<String>,
+    /// `human` or `ai`; both when absent.
+    variant: Option<String>,
     limit: Option<i64>,
 }
 
@@ -195,8 +197,9 @@ async fn search_inner(cx: &Cx) -> ApiResult {
     let ctx = api_ctx(cx).await?;
     let q = query_params::<SearchQuery>(cx).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let query = q.q.as_deref().unwrap_or("");
+    let variant = q.variant.as_deref().map(|v| parse_variant(Some(v))).transpose()?;
     let hits = app(cx)
-        .search(&ctx, query, q.project.as_deref(), q.limit.unwrap_or(20))
+        .search(&ctx, query, q.project.as_deref(), variant, q.limit.unwrap_or(20))
         .await?;
     #[derive(Serialize)]
     struct Hit {
@@ -204,6 +207,11 @@ async fn search_inner(cx: &Cx) -> ApiResult {
         path: String,
         variant: Variant,
         title: Option<String>,
+        /// Matching section; `None` when only the title or path matched.
+        anchor: Option<String>,
+        section_title: Option<String>,
+        /// Pass as `section_hash` to a section write.
+        section_hash: Option<Hash>,
         rank: f32,
         snippet: String,
     }
@@ -215,6 +223,9 @@ async fn search_inner(cx: &Cx) -> ApiResult {
             path: h.path,
             variant: h.variant,
             title: h.title,
+            anchor: h.anchor,
+            section_title: h.section_title,
+            section_hash: h.section_hash,
             rank: h.rank,
         })
         .collect();

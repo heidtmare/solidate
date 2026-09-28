@@ -72,7 +72,7 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 | GET | `/projects/{p}` | |
 | GET | `/projects/{p}/tree` | own + inherited; `ETag` = root hash |
 | GET | `/projects/{p}/hash` | `{root_hash}`; `If-None-Match` -> 304 |
-| GET | `/search` | `q` (websearch syntax), `project`, `limit` (default 20) |
+| GET | `/search` | `q` (websearch syntax), `project`, `variant` (both if absent), `limit` (default 20) -> `[{project, path, variant, title, anchor, section_title, section_hash, rank, snippet}]`; one hit per matching section; `anchor` null = title/path match only |
 | GET | `/projects/{p}/llms.txt` | `text/plain`; links AI variant raw Markdown (human if no AI) |
 
 ## Sync and proposals {#sync}
@@ -97,6 +97,7 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 | GET | `/projects/{p}/drift` | `{revision, reported_at, entries}`; entries not `fresh` or with `missing` |
 | GET | `/projects/{p}/drift/{path}` | all bound sections of the doc, incl. `fresh` |
 | POST | `/projects/{p}/affected` | `{paths}` -> `[{path, anchor, section_title, paths}]` |
+| POST | `/projects/{p}/context` | `{paths, variant?}` (default `ai`) -> `[{path, document_title, anchor, section_title, variant, content, hash, content_hash, paths, links}]` |
 | POST | `/projects/{p}/verify/{path}` | `{anchors, revision?}` -> doc drift entries; scope `write` |
 
 - entry fields and states: [[guide/code-drift#queue]].

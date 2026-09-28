@@ -38,6 +38,10 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `get_translation_guide` | `project` | |
 | `propose_translation` | `project`, `path`, `variant`, `content`, `base_hash?`, `message?`, `resolves?` | replaces open proposal for variant |
 | `list_proposals` | `project` | `resolves`, `diff`, `outdated` |
+| `report_sources` | `project`, `revision?`, `files` (`{path: git blob id}`), `removed?`, `replace?` | `{revision, reported_at, files}`; requires `write` |
+| `get_drift_queue` | `project` | `{revision, reported_at, entries}`; see [[guide/code-drift#queue]] |
+| `affected_sections` | `project`, `paths` | bound sections matching any path; no report needed |
+| `verify_sources` | `project`, `path`, `anchors`, `revision?` | doc drift entries; `revision` != current report -> error |
 
 - `variant` default: `human`.
 

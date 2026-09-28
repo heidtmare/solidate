@@ -84,6 +84,18 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 
 - accept: web UI only (human decision). See [[guide/agents-and-translation]].
 
+## Source drift {#drift}
+
+| method | path | notes |
+|---|---|---|
+| POST | `/projects/{p}/sources` | `{revision?, files: {path: hash}, removed?, replace?}` -> `{revision, reported_at, files}`; scope `write` |
+| GET | `/projects/{p}/drift` | `{revision, reported_at, entries}`; entries not `fresh` or with `missing` |
+| GET | `/projects/{p}/drift/{path}` | all bound sections of the doc, incl. `fresh` |
+| POST | `/projects/{p}/affected` | `{paths}` -> `[{path, anchor, section_title, paths}]` |
+| POST | `/projects/{p}/verify/{path}` | `{anchors, revision?}` -> doc drift entries; scope `write` |
+
+- entry fields and states: [[guide/code-drift#queue]].
+
 ## Audit {#audit}
 
 - `GET /audit`: newest first; scope `admin`; `limit` (default 100, max 500), `before=<id>`; response includes `next` cursor.

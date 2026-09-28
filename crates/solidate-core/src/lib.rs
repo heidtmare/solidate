@@ -8,6 +8,7 @@ pub mod inherit;
 pub mod links;
 pub mod markdown;
 pub mod path;
+pub mod sources;
 #[cfg(feature = "sqlx")]
 mod sqlx_text;
 pub mod sync;

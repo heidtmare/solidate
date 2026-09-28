@@ -8,6 +8,9 @@
 //! from an explicit `{#id}` suffix on the heading when one is present, otherwise from
 //! a slug of the heading text, de-duplicated within the document. Anchors pair a
 //! document's human and AI sections for sync, and they're the `id`s in rendered HTML.
+//!
+//! `<!-- sources: ... -->` blocks bind sections to repository files (see
+//! [`crate::sources`]). They are left out of semantic hashes.
 
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
@@ -16,12 +19,13 @@ use std::sync::Mutex;
 use comrak::adapters::{CodefenceRendererAdapter, HeadingAdapter, HeadingMeta};
 use comrak::nodes::{AstNode, NodeValue, Sourcepos};
 use comrak::options::Plugins;
-use comrak::{Arena, Options, format_html_with_plugins, html, markdown_to_commonmark, parse_document};
+use comrak::{Arena, Options, format_commonmark, format_html_with_plugins, html, parse_document};
 use serde::{Deserialize, Serialize};
 
 use crate::hash::Hash;
 use crate::links::{LinkTarget, parse_include, parse_markdown_link, parse_wiki_target};
 use crate::path::DocPath;
+use crate::sources::{SourceBinding, merge_bindings, parse_directive};
 
 /// The anchor of the text before a document's first heading.
 pub const PREAMBLE_ANCHOR: &str = "_preamble";
@@ -42,9 +46,18 @@ pub fn options() -> Options<'static> {
     o
 }
 
-/// Canonical CommonMark for `md`. Formatting-only edits normalize to the same output.
+/// Canonical CommonMark for `md`, without source directives. Formatting-only edits
+/// normalize to the same output.
 pub fn normalize(md: &str) -> String {
-    markdown_to_commonmark(md, &options())
+    let opts = options();
+    let arena = Arena::new();
+    let root = parse_document(&arena, md, &opts);
+    for (node, _) in source_directives(root) {
+        node.detach();
+    }
+    let mut out = String::new();
+    format_commonmark(root, &opts, &mut out).expect("writing to a String cannot fail");
+    out
 }
 
 pub fn semantic_hash(md: &str) -> Hash {
@@ -78,6 +91,8 @@ pub struct Analysis {
     pub links: Vec<LinkTarget>,
     /// Top-level `{{include ...}}` directives in document order.
     pub includes: Vec<LinkTarget>,
+    /// Source bindings per section anchor, in document order.
+    pub sources: Vec<SourceBinding>,
 }
 
 impl Analysis {
@@ -120,10 +135,15 @@ pub fn analyze(md: &str, base: Option<&DocPath>) -> Analysis {
     };
 
     let top: Vec<&AnchoredHeading> = headings.iter().filter(|h| h.top_level).collect();
+    let directives = source_directives(root);
     let mut sections = Vec::with_capacity(top.len() + 1);
     let first_line = top.first().map_or(lines.len() + 1, |h| h.sourcepos.start.line);
     let preamble = slice(1, first_line - 1);
-    if !preamble.trim().is_empty() {
+    // A preamble holding only source directives is not a section.
+    let preamble_text = (1..first_line).any(|l| {
+        !directives.iter().any(|(_, (from, to))| (*from..=*to).contains(&l)) && !lines[l - 1].trim().is_empty()
+    });
+    if preamble_text {
         sections.push(section(PREAMBLE_ANCHOR, "", 0, None, 0, preamble));
     }
     let mut stack: Vec<(u8, String)> = Vec::new();
@@ -165,6 +185,7 @@ pub fn analyze(md: &str, base: Option<&DocPath>) -> Analysis {
     }
 
     let includes = top_level_includes(root).into_iter().map(|(t, _)| t).collect();
+    let sources = bindings(&directives, &top);
 
     Analysis {
         content_hash: Hash::of(md),
@@ -173,7 +194,48 @@ pub fn analyze(md: &str, base: Option<&DocPath>) -> Analysis {
         sections,
         links,
         includes,
+        sources,
     }
+}
+
+/// Source bindings of `md` per section anchor, without the rest of [`analyze`].
+pub fn source_bindings(md: &str) -> Vec<SourceBinding> {
+    let opts = options();
+    let arena = Arena::new();
+    let root = parse_document(&arena, md, &opts);
+    let headings = assign_anchors(root);
+    let top: Vec<&AnchoredHeading> = headings.iter().filter(|h| h.top_level).collect();
+    bindings(&source_directives(root), &top)
+}
+
+/// Top-level HTML blocks that are source directives, with their 1-based inclusive
+/// line ranges.
+fn source_directives<'a>(root: &'a AstNode<'a>) -> Vec<(&'a AstNode<'a>, (usize, usize))> {
+    root.children()
+        .filter(|n| matches!(&n.data().value, NodeValue::HtmlBlock(h) if parse_directive(&h.literal).is_some()))
+        .map(|n| {
+            let sp = n.data().sourcepos;
+            (n, (sp.start.line, sp.end.line))
+        })
+        .collect()
+}
+
+/// Assigns each directive to the top-level section containing its first line.
+fn bindings<'a>(directives: &[(&'a AstNode<'a>, (usize, usize))], top: &[&AnchoredHeading]) -> Vec<SourceBinding> {
+    merge_bindings(directives.iter().filter_map(|(node, (line, _))| {
+        let NodeValue::HtmlBlock(h) = &node.data().value else {
+            return None;
+        };
+        let anchor = top
+            .iter()
+            .rev()
+            .find(|t| t.sourcepos.start.line <= *line)
+            .map_or(PREAMBLE_ANCHOR, |t| t.anchor.as_str());
+        Some(SourceBinding {
+            anchor: anchor.to_owned(),
+            patterns: parse_directive(&h.literal)?,
+        })
+    }))
 }
 
 fn section(anchor: &str, title: &str, level: u8, parent: Option<String>, ordinal: u32, body: String) -> Section {
@@ -486,6 +548,33 @@ mod tests {
             r.html
         );
         assert!(r.html.contains(r#"<code class="language-rust">"#));
+    }
+
+    #[test]
+    fn source_directives_bind_sections_and_skip_hashes() {
+        let md = "<!-- sources: README.md -->\n\n# A\n\nText.\n\n<!-- sources: src/a.rs,\n  src/b/ -->\n\n## B\n\n<!-- note -->\n\n# C\n\n<!-- sources: src/a.rs, x.rs -->\n";
+        let a = analyze(md, None);
+        let got: Vec<_> = a
+            .sources
+            .iter()
+            .map(|b| (b.anchor.as_str(), b.patterns.join(" ")))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("_preamble", "README.md".into()),
+                ("a", "src/a.rs src/b/".into()),
+                ("c", "src/a.rs x.rs".into())
+            ]
+        );
+        assert_eq!(source_bindings(md), a.sources);
+        let anchors: Vec<_> = a.sections.iter().map(|s| s.anchor.as_str()).collect();
+        assert_eq!(anchors, ["a", "b", "c"], "directive-only preamble is not a section");
+        let plain = analyze("# A\n\nText.\n\n## B\n\n<!-- note -->\n\n# C\n", None);
+        let hashes = |a: &Analysis| a.sections.iter().map(|s| s.hash).collect::<Vec<_>>();
+        assert_eq!(hashes(&a), hashes(&plain));
+        assert_ne!(a.content_hash, plain.content_hash);
+        assert!(!render_html(md, None, &|_| None).html.contains("sources:"));
     }
 
     #[test]

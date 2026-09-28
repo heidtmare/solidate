@@ -58,6 +58,12 @@ hashes of included content are folded into the including document's *resolved
 hash*, so a change upstream is visible to anyone caching the expanded page. The
 readme of this project includes the glossary this way.
 
+## Source bindings {#sources}
+
+A section can name the repository files it describes with a comment such as
+`<!-- sources: crates/solidate-app/src/auth.rs -->` on its own lines. Solidate
+then flags the section when those files change. See [[guide/code-drift]].
+
 ## Other Markdown features {#markdown}
 
 Tables, task lists, strikethrough, autolinks and footnotes are supported. Raw

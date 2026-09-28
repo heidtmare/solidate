@@ -16,6 +16,7 @@ mod models;
 mod projects;
 mod proposals;
 mod search;
+mod sources;
 mod sync;
 mod tokens;
 

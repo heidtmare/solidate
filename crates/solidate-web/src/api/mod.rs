@@ -10,6 +10,7 @@
 mod audit;
 mod docs;
 mod projects;
+mod sources;
 mod sync;
 
 pub(crate) use projects::llms_txt;

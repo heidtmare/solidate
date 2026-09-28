@@ -15,9 +15,10 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData as McpError, ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use solidate_app::core::sources::Files;
 use solidate_app::core::{DocPath, Hash, Variant, analyze};
 use solidate_app::db::Expect;
-use solidate_app::{App, AppError, Credential, Ctx, Propose, PutDoc};
+use solidate_app::{App, AppError, Credential, Ctx, Propose, PutDoc, SourceReport};
 use time::format_description::well_known::Rfc3339;
 
 const INSTRUCTIONS: &str = "Solidate stores project documentation as one ground truth written twice: every document \
@@ -30,7 +31,14 @@ To translate changes made by others: call get_translation_guide once per project
 get_sync_queue that have no current proposal, read each with get_sync_item, and submit the full translated \
 variant with propose_translation. A person reviews and accepts proposals. Use resolve_sync only when an edit \
 does not change meaning (typos, formatting) so no translation is needed.\n\n\
-Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.";
+Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.\n\n\
+Sections can declare the repository files they describe with an HTML comment on its own lines, \
+`<!-- sources: path/file.rs, dir/, src/**/*.sql -->` (paths relative to the repository root). After changing code, \
+call affected_sections with the changed paths and update the sections it returns. get_drift_queue lists bound \
+sections whose files changed since they were last verified (or were never verified); `git diff \
+<verified_revision> -- <changed paths>` shows what changed. Fix the section (then translate it as usual) or, if \
+it is still accurate, call verify_sources. Drift is computed against file hashes reported with report_sources \
+(git blob ids, e.g. from `git ls-files -s`), usually by CI.";
 
 type ToolResult = Result<CallToolResult, McpError>;
 
@@ -200,6 +208,40 @@ pub struct HistoryArgs {
     pub variant: Option<String>,
     /// Maximum revisions (default 20).
     pub limit: Option<i64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ReportSourcesArgs {
+    pub project: String,
+    /// Commit id of the reported tree.
+    pub revision: Option<String>,
+    /// Path (relative to the repository root) → git blob object id.
+    #[serde(default)]
+    pub files: Files,
+    /// Paths deleted since the previous report.
+    #[serde(default)]
+    pub removed: Vec<String>,
+    /// `files` is the complete tree; files missing from it are removed.
+    #[serde(default)]
+    pub replace: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct AffectedArgs {
+    pub project: String,
+    /// Changed repository paths, relative to the repository root.
+    pub paths: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct VerifyArgs {
+    pub project: String,
+    pub path: String,
+    /// Anchors of bound sections that still describe their sources.
+    pub anchors: Vec<String>,
+    /// The report revision you checked against (from get_drift_queue); the call
+    /// fails if a newer report arrived since.
+    pub revision: Option<String>,
 }
 
 impl SolidateMcp {
@@ -472,6 +514,59 @@ impl SolidateMcp {
             })
             .collect();
         ok(json!(out))
+    }
+
+    #[tool(
+        description = "Report repository file hashes for drift tracking: files maps path → git blob id (as printed by `git ls-files -s`). Partial by default (upsert files, delete removed); replace=true makes files the complete tree."
+    )]
+    async fn report_sources(&self, Parameters(a): Parameters<ReportSourcesArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let s = try_app!(
+            self.app
+                .report_sources(
+                    &ctx,
+                    &a.project,
+                    SourceReport {
+                        revision: a.revision.as_deref(),
+                        files: &a.files,
+                        removed: &a.removed,
+                        replace: a.replace,
+                    },
+                )
+                .await
+        );
+        ok(json!(s))
+    }
+
+    #[tool(
+        description = "Sections whose declared source files changed since they were last verified (state changed, with changed/added/removed paths and verified_revision), were never verified (unverified), or have patterns matching no reported file (missing). Update the section or call verify_sources."
+    )]
+    async fn get_drift_queue(&self, Parameters(a): Parameters<ProjectArg>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        ok(json!(try_app!(self.app.drift_queue(&ctx, &a.project).await)))
+    }
+
+    #[tool(
+        description = "Sections whose source patterns match any of the given repository paths. Call after changing code to find the documentation to update."
+    )]
+    async fn affected_sections(&self, Parameters(a): Parameters<AffectedArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        ok(json!(try_app!(
+            self.app.affected_sections(&ctx, &a.project, &a.paths).await
+        )))
+    }
+
+    #[tool(
+        description = "Confirm that sections still describe their source files as currently reported, clearing their drift. Returns the document's drift status."
+    )]
+    async fn verify_sources(&self, Parameters(a): Parameters<VerifyArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let path = try_app!(parse_path(&a.path));
+        ok(json!(try_app!(
+            self.app
+                .verify_sources(&ctx, &a.project, &path, &a.anchors, a.revision.as_deref())
+                .await
+        )))
     }
 
     #[tool(description = "Documents linking to a document.")]

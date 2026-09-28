@@ -20,6 +20,7 @@ It is recorded against the showcase data in [demo/showcase](demo/showcase/README
 - **Project inheritance.** Child projects inherit documents (shared glossary, style rules, translation guide) and can override any of them.
 - **Transclusion and links.** `{{include project:doc#section}}` directives, `[[wiki links]]`, backlinks.
 - **Content hashing.** BLAKE3 content hashes as ETags and for optimistic concurrency, semantic hashes for sync, and a Merkle root per project.
+- **Doc↔code drift.** Sections declare the repository files they describe (`<!-- sources: path, dir/, **/*.sql -->`); clients report file hashes (git blob ids), and a drift queue lists sections whose files changed since they were last verified.
 - **APIs for tools.** REST API, MCP server (streamable HTTP and stdio), and an `llms.txt` index.
 - **Multi-tenant.** PostgreSQL row-level security isolates tenants; scoped, optionally project-restricted API tokens; audit log; per-token rate limits.
 
@@ -66,6 +67,8 @@ docker compose run --rm cli token create acme claude --scope write --project doc
 claude mcp add --transport http solidate http://localhost:3000/mcp \
   --header "Authorization: Bearer sol_…"
 ```
+
+To track doc↔code drift, report the repository from CI, e.g. `solidate sources report acme docs --dir .` (or `POST /api/v1/projects/docs/sources` with `git ls-files -s` output).
 
 For local use without the server, `solidate-mcp` serves the same tools over stdio using `DATABASE_URL` and `SOLIDATE_TOKEN`.
 

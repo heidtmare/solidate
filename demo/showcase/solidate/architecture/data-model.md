@@ -42,6 +42,15 @@ the last reconciliation. `proposals` holds at most one open translation proposal
 per document variant, together with the hashes of both heads at submission time,
 which is how Solidate knows a proposal is outdated.
 
+## Source drift {#sources}
+
+`source_snapshots` and `source_files` hold, per project, the repository files last
+reported by a client, as path and hash, plus the report's revision.
+`source_verifications` records, per document and anchor, the files a section's
+patterns matched when it was last verified, as a JSON object of path to hash.
+Bindings themselves are not stored; they are parsed from the variants' current
+content. See [[guide/code-drift]].
+
 ## Tokens and audit {#audit}
 
 `api_tokens` stores a public lookup prefix, a hash of the secret, scopes, an

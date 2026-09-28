@@ -19,6 +19,7 @@ Wiki-style knowledge base for project design docs; read/written by humans and AI
 | inheritance | child projects inherit docs (guide, rules); override by path |
 | references | `{{include}}`, wiki links, backlinks |
 | hashing | BLAKE3 content hash = ETag; semantic hash for sync; Merkle root per project |
+| code drift | sections bind source files; queue of sections whose files changed since verification |
 | APIs | REST `/api/v1`, MCP (`/mcp`, stdio), `llms.txt` |
 | tenancy | PostgreSQL RLS |
 
@@ -32,6 +33,7 @@ Source: parent project `handbook`.
 
 - start: [[guide/quickstart]], [[guide/writing-documents]]
 - sync: [[guide/variants-and-sync]], [[guide/agents-and-translation]]
+- code drift: [[guide/code-drift]]
 - ops: [[guide/administration]], [[reference/configuration]]
 - integration: [[reference/rest-api]], [[reference/mcp]]
 - internals: [[architecture/overview]]

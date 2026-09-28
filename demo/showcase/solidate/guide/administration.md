@@ -67,8 +67,14 @@ was loaded with `import --synced`.
 
 ```sh
 solidate sync-queue acme docs
+solidate sources report acme docs --dir ~/src/docs-repo
+solidate drift acme docs
 solidate audit acme --limit 20
 ```
+
+`sources report` reports a git checkout's tracked files as the project's source
+tree, and `drift` lists sections whose sources changed since they were verified.
+See [[guide/code-drift]].
 
 The audit log prints newest first, tab-separated: id, time, actor, action,
 project, target and detail. Pass `--before <id>` to page.

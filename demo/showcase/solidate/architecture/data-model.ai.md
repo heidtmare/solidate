@@ -37,6 +37,16 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 | `sync_bases` | `(document_id, anchor)`, `human_hash`, `ai_hash` | semantic hashes at last reconciliation |
 | `proposals` | `id`, `document_id`, `variant`, `base_hash`, `source_hash`, `content`, `resolves[]`, `message` | UNIQUE `(tenant_id, document_id, variant)`; outdated if either head hash differs |
 
+## Source drift {#sources}
+
+| table | key columns | notes |
+|---|---|---|
+| `source_snapshots` | `project_id`, `revision`, `reported_at` | one per project; last report |
+| `source_files` | `(project_id, path)`, `hash` | reported tree |
+| `source_verifications` | `(document_id, anchor)`, `files` jsonb `{path: hash}`, `revision`, `author_user_id`, `author_token_id`, `verified_at` | pruned when bindings leave both variants |
+
+- bindings not stored: parsed from head content on read. See [[guide/code-drift]].
+
 ## Tokens and audit {#audit}
 
 | table | key columns | notes |
@@ -44,7 +54,7 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 | `api_tokens` | `id`, `prefix` UNIQUE, `secret_hash`, `scopes[]`, `project_id`, `expires_at`, `last_used_at`, `revoked_at` | scopes subset of `read,write,admin` |
 | `audit_log` | `id` (UUIDv7), `at`, `actor_kind` (`user\|token\|system`), `actor_user_id`, `actor_token_id`, `action`, `project_id`, `target`, `detail` jsonb | `solidate_app`: SELECT, INSERT only; no FKs on actors |
 
-- audit actions: `tenant.create`, `member.set`, `project.create`, `project.set_parent`, `project.settings`, `token.create`, `token.revoke`, `doc.write`, `doc.delete`, `doc.sync_setting`, `sync.resolve`, `proposal.submit`, `proposal.accept`, `proposal.reject`.
+- audit actions: `tenant.create`, `member.set`, `project.create`, `project.set_parent`, `project.settings`, `token.create`, `token.revoke`, `doc.write`, `doc.delete`, `doc.sync_setting`, `sync.resolve`, `proposal.submit`, `proposal.accept`, `proposal.reject`, `sources.report`, `sources.verify`.
 
 ## Tenant keys everywhere {#tenant-keys}
 

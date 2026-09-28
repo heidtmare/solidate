@@ -11,6 +11,7 @@ mod projects;
 mod proposals;
 mod ratelimit;
 mod search;
+mod sources;
 mod sync;
 pub mod telemetry;
 
@@ -21,6 +22,7 @@ pub use error::{AppError, Result};
 pub use oidc::{CALLBACK_PATH, Oidc, OidcConfig, OidcIdentity, OidcStart, PendingLogin};
 pub use proposals::{DEFAULT_GUIDE, GUIDE_PATH, ProposalRef, ProposalView, Propose, TranslationGuide};
 pub use ratelimit::RateLimit;
+pub use sources::{AffectedSection, DriftEntry, DriftQueue, MAX_REPORT_FILES, SnapshotSummary, SourceReport};
 pub use sync::{DocSync, QueueEntry, SectionText, SyncItem};
 
 pub use openidconnect;

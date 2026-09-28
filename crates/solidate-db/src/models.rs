@@ -1,6 +1,7 @@
 //! Row types.
 
 use serde::Serialize;
+use solidate_core::sources::Files;
 use solidate_core::{Hash, Role, Scope, Variant};
 use time::OffsetDateTime;
 
@@ -139,6 +140,28 @@ pub struct SectionRow {
     pub level: i16,
     pub parent_anchor: Option<String>,
     pub hash: Hash,
+}
+
+/// A project's last reported repository files (see [`solidate_core::sources`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceSnapshot {
+    pub revision: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub reported_at: OffsetDateTime,
+    pub files: Files,
+}
+
+/// The files a section's source patterns matched when it was last verified.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
+pub struct SourceVerification {
+    pub anchor: String,
+    #[sqlx(json)]
+    pub files: Files,
+    pub revision: Option<String>,
+    pub author_user_id: Option<UserId>,
+    pub author_token_id: Option<TokenId>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub verified_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]

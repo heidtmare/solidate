@@ -1,8 +1,8 @@
 //! Service-level integration tests. Require `DATABASE_URL`; see `.env.example`.
 
 use solidate_app::core::{DocPath, Hash, Role, Scope, SectionTarget, Slug, SyncState, Variant};
-use solidate_app::db::{Db, Expect};
-use solidate_app::{App, AppError, Changes, Config, Ctx, PutDoc, PutResult, PutSection};
+use solidate_app::db::{Db, Expect, RevisionId};
+use solidate_app::{App, AppError, Changes, Config, Ctx, PutDoc, PutResult, PutSection, Restore, RestoreResult};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 async fn setup(pool: PgPoolOptions, opts: PgConnectOptions) -> (App, Ctx) {
@@ -1398,4 +1398,183 @@ async fn change_feed(pool: PgPoolOptions, opts: PgConnectOptions) {
         app.changes(&ctx, "app", Some("yesterday")).await,
         Err(AppError::Invalid(_))
     ));
+}
+
+async fn restore(app: &App, ctx: &Ctx, p: &str, rev: RevisionId, companion: bool, dry_run: bool) -> RestoreResult {
+    app.restore(
+        ctx,
+        Restore {
+            project: "app",
+            path: &path(p),
+            revision: rev,
+            expect: Expect::Any,
+            message: None,
+            companion,
+            dry_run,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+async fn head(app: &App, ctx: &Ctx, p: &str, v: Variant) -> String {
+    app.get_doc(ctx, "app", &path(p), v)
+        .await
+        .unwrap()
+        .head
+        .unwrap()
+        .content
+}
+
+fn states(sync: &[solidate_app::core::sync::SectionSync]) -> Vec<(&str, SyncState)> {
+    sync.iter().map(|s| (s.anchor.as_str(), s.state)).collect()
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn restores(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let h1 = "# Auth\n\nTokens are opaque.\n\n## Expiry\n\nSessions last 14 days.\n";
+    let a1 = "# Auth\n\n- tokens: opaque\n\n## Expiry\n\n- session_ttl: 14d\n";
+    let r1 = put(&app, &ctx, "app", "auth", Variant::Human, h1, Expect::Absent, &[])
+        .await
+        .unwrap()
+        .revision;
+    let ra1 = put(&app, &ctx, "app", "auth", Variant::Ai, a1, Expect::Absent, &[])
+        .await
+        .unwrap()
+        .revision;
+
+    // Undo before the AI caught up: back to the base, nothing else to do.
+    let h2 = h1.replace("14 days", "30 days");
+    put(&app, &ctx, "app", "auth", Variant::Human, &h2, Expect::Any, &[])
+        .await
+        .unwrap();
+    let r = restore(&app, &ctx, "auth", r1.id, true, false).await;
+    assert!(r.put.created);
+    assert_eq!(r.put.revision.restored_from, Some(r1.id));
+    assert!(r.companion.is_none());
+    assert!(r.sync.iter().all(|s| s.state == SyncState::InSync));
+    assert_eq!(head(&app, &ctx, "auth", Variant::Human).await, h1);
+    assert!(r.diff.contains("-Sessions last 30 days."), "{}", r.diff);
+
+    // Undo after the AI was translated: the AI section goes back to the text that
+    // was in sync with the restored one.
+    let h3 = h1.replace("14 days", "7 days");
+    put(&app, &ctx, "app", "auth", Variant::Human, &h3, Expect::Any, &[])
+        .await
+        .unwrap();
+    let a3 = a1.replace("14d", "7d");
+    put(&app, &ctx, "app", "auth", Variant::Ai, &a3, Expect::Any, &["expiry"])
+        .await
+        .unwrap();
+
+    // Dry run: full result, nothing written.
+    let d = restore(&app, &ctx, "auth", r1.id, true, true).await;
+    assert!(d.dry_run);
+    assert_eq!(
+        d.companion.as_ref().map(|c| c.anchors.clone()),
+        Some(vec!["expiry".to_owned()])
+    );
+    assert_eq!(head(&app, &ctx, "auth", Variant::Human).await, h3);
+    assert_eq!(head(&app, &ctx, "auth", Variant::Ai).await, a3);
+
+    // Without companion: the AI side is stale, and the sync item offers the paired
+    // text.
+    let r = restore(&app, &ctx, "auth", r1.id, false, false).await;
+    assert_eq!(
+        states(&r.sync),
+        [("auth", SyncState::InSync), ("expiry", SyncState::HumanAhead)]
+    );
+    let item = app.sync_item(&ctx, "app", &path("auth"), "expiry").await.unwrap();
+    assert_eq!(item.paired.as_deref(), Some("## Expiry\n\n- session_ttl: 14d\n"));
+
+    // Back to h3 (paired with a3), then restore r1 with companion.
+    let r3 = app
+        .history(&ctx, "app", &path("auth"), Variant::Human, 10)
+        .await
+        .unwrap()
+        .1
+        .into_iter()
+        .find(|r| r.content_hash == Hash::of(&h3))
+        .unwrap();
+    let r = restore(&app, &ctx, "auth", r3.id, true, false).await;
+    assert!(r.reconciled.is_empty());
+    assert!(r.sync.iter().all(|s| s.state == SyncState::InSync));
+    let r = restore(&app, &ctx, "auth", r1.id, true, false).await;
+    let c = r.companion.unwrap();
+    assert_eq!(c.anchors, ["expiry"]);
+    assert_eq!(r.reconciled, ["expiry"]);
+    assert!(r.sync.iter().all(|s| s.state == SyncState::InSync));
+    assert_eq!(head(&app, &ctx, "auth", Variant::Ai).await, a1);
+
+    // AI side edited since the last sync: left for a person.
+    let h4 = h1.replace("Tokens are opaque.", "Tokens are signed.");
+    put(&app, &ctx, "app", "auth", Variant::Human, &h4, Expect::Any, &[])
+        .await
+        .unwrap();
+    let a4 = a1.replace("opaque", "signed");
+    put(&app, &ctx, "app", "auth", Variant::Ai, &a4, Expect::Any, &["auth"])
+        .await
+        .unwrap();
+    let a5 = a4.replace("signed", "jwt");
+    put(&app, &ctx, "app", "auth", Variant::Ai, &a5, Expect::Any, &[])
+        .await
+        .unwrap();
+    let r = restore(&app, &ctx, "auth", r1.id, true, false).await;
+    assert_eq!(r.skipped, ["auth"]);
+    assert!(r.companion.is_none());
+    assert_eq!(
+        states(&r.sync),
+        [("auth", SyncState::Conflict), ("expiry", SyncState::InSync)]
+    );
+
+    // Reverting a bad AI write that was marked in sync brings the earlier base back
+    // instead of asking a person to update the human variant.
+    put(&app, &ctx, "app", "auth", Variant::Ai, a1, Expect::Any, &["auth"])
+        .await
+        .unwrap();
+    let bad = a1.replace("opaque", "wrong");
+    put(&app, &ctx, "app", "auth", Variant::Ai, &bad, Expect::Any, &["auth"])
+        .await
+        .unwrap();
+    let r = restore(&app, &ctx, "auth", ra1.id, true, false).await;
+    assert_eq!(r.reconciled, ["auth"]);
+    assert!(r.sync.iter().all(|s| s.state == SyncState::InSync));
+
+    // A section the restore removes is removed from the other variant.
+    let h6 = format!("{h1}\n## Scopes\n\nRead and write.\n");
+    let a6 = format!("{a1}\n## Scopes\n\n- scopes: read, write\n");
+    put(&app, &ctx, "app", "auth", Variant::Human, &h6, Expect::Any, &[])
+        .await
+        .unwrap();
+    put(&app, &ctx, "app", "auth", Variant::Ai, &a6, Expect::Any, &["scopes"])
+        .await
+        .unwrap();
+    let r = restore(&app, &ctx, "auth", r1.id, true, false).await;
+    assert_eq!(r.companion.unwrap().anchors, ["scopes"]);
+    assert!(r.sync.iter().all(|s| s.state == SyncState::InSync));
+    // The blank line before the removed heading stays with the preceding section.
+    assert_eq!(head(&app, &ctx, "auth", Variant::Ai).await.trim_end(), a1.trim_end());
+
+    // Restoring it again inserts the paired section after its predecessor.
+    let r6 = app
+        .history(&ctx, "app", &path("auth"), Variant::Human, 50)
+        .await
+        .unwrap()
+        .1
+        .into_iter()
+        .find(|r| r.content_hash == Hash::of(&h6))
+        .unwrap();
+    let r = restore(&app, &ctx, "auth", r6.id, true, false).await;
+    assert_eq!(r.companion.unwrap().anchors, ["scopes"]);
+    assert!(r.sync.iter().all(|s| s.state == SyncState::InSync));
+    assert!(
+        head(&app, &ctx, "auth", Variant::Ai)
+            .await
+            .ends_with("## Scopes\n\n- scopes: read, write\n")
+    );
+
+    // Restoring the current content writes nothing.
+    let r = restore(&app, &ctx, "auth", r6.id, true, false).await;
+    assert!(!r.put.created);
 }

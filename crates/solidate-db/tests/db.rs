@@ -32,6 +32,7 @@ async fn write(
         author: Author::System,
         message: None,
         expect,
+        restored_from: None,
     })
     .await
 }

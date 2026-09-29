@@ -669,6 +669,7 @@ async fn mcp_over_http(pool: PgPoolOptions, opts: PgConnectOptions) {
         "context_for_paths",
         "verify_sources",
         "changes_since",
+        "restore_revision",
     ] {
         assert!(names.contains(&n), "missing tool {n}");
     }
@@ -955,4 +956,126 @@ async fn rate_limit_audit_and_health(pool: PgPoolOptions, opts: PgConnectOptions
     // MCP over HTTP shares the limit.
     let r = mcp(&router, &rw_bearer, r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).await;
     assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn restore_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, router, rw, _) = setup(pool, opts).await;
+    let api = Api {
+        router: router.clone(),
+        auth: rw.clone(),
+    };
+    let put = |variant: &'static str, tag: String, content: String, resolves: &'static str| {
+        let api = &api;
+        async move {
+            let (name, value) = if tag == "*" {
+                ("if-none-match", "*".to_owned())
+            } else {
+                ("if-match", tag)
+            };
+            api.req(
+                "PUT",
+                &format!("/api/v1/projects/app/docs/auth?variant={variant}&resolves={resolves}"),
+                &[("content-type", "text/markdown"), (name, &value)],
+                Some(&content),
+            )
+            .await
+        }
+    };
+    let h1 = "# Auth\n\nSessions last 14 days.\n";
+    let h = put("human", "*".into(), h1.into(), "").await;
+    put("ai", "*".into(), "# Auth\n\n- session_ttl: 14d\n".into(), "").await;
+    let first = h.json()["revision"].as_str().unwrap().to_owned();
+    let h2 = put("human", h.etag.unwrap(), h1.replace("14", "30"), "").await;
+    let a = api
+        .req(
+            "GET",
+            "/api/v1/projects/app/docs/auth?variant=ai&format=json",
+            &[],
+            None,
+        )
+        .await;
+    put("ai", a.etag.unwrap(), "# Auth\n\n- session_ttl: 30d\n".into(), "auth").await;
+
+    let body = format!(r#"{{"revision":"{first}"}}"#);
+    let r = api
+        .req("POST", "/api/v1/projects/app/restore/auth", &[], Some(&body))
+        .await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_REQUIRED, "{}", r.body);
+
+    // Dry run needs no precondition and writes nothing.
+    let dry = format!(r#"{{"revision":"{first}","dry_run":true}}"#);
+    let r = api
+        .req("POST", "/api/v1/projects/app/restore/auth", &[], Some(&dry))
+        .await
+        .json();
+    assert_eq!(r["dry_run"], true);
+    assert_eq!(r["companion"]["anchors"][0], "auth");
+
+    let tag = h2.etag.unwrap();
+    let r = api
+        .req(
+            "POST",
+            "/api/v1/projects/app/restore/auth",
+            &[("if-match", &tag)],
+            Some(&body),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let j = r.json();
+    assert_eq!(
+        (j["changed"].as_bool(), j["restored_from"].as_str()),
+        (Some(true), Some(first.as_str()))
+    );
+    assert_eq!(j["reconciled"][0], "auth");
+    assert_eq!(j["sync"].as_array().unwrap().len(), 0);
+    let hist = api
+        .req("GET", "/api/v1/projects/app/history/auth", &[], None)
+        .await
+        .json();
+    assert_eq!(hist[0]["restored_from"].as_str(), Some(first.as_str()));
+    let ai = api
+        .req("GET", "/api/v1/projects/app/docs/auth?variant=ai&format=md", &[], None)
+        .await;
+    assert_eq!(ai.body, "# Auth\n\n- session_ttl: 14d\n");
+
+    // Stale If-Match.
+    let r = api
+        .req(
+            "POST",
+            "/api/v1/projects/app/restore/auth",
+            &[("if-match", &tag)],
+            Some(&body),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::PRECONDITION_FAILED);
+
+    // MCP: doc_history marks the restore; restore_revision dry run.
+    let (err, text) = tool(
+        &router,
+        &rw,
+        "doc_history",
+        serde_json::json!({ "project": "app", "path": "auth" }),
+    )
+    .await;
+    assert!(!err, "{text}");
+    let hist: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(hist[0]["restored_from"].as_str(), Some(first.as_str()));
+    let second = hist[1]["revision"].as_str().unwrap();
+    let head = hist[0]["content_hash"].as_str().unwrap();
+    let (err, text) = tool(
+        &router,
+        &rw,
+        "restore_revision",
+        serde_json::json!({
+            "project": "app", "path": "auth", "revision": second, "base_hash": head, "dry_run": true,
+        }),
+    )
+    .await;
+    assert!(!err, "{text}");
+    let r: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (r["changed"].as_bool(), r["dry_run"].as_bool()),
+        (Some(true), Some(true))
+    );
 }

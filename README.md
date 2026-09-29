@@ -24,6 +24,7 @@ A Mermaid fence renders in the editor preview as it is typed. Errors show inline
 - **Section-level edits.** Agents replace, insert or delete one section (`write_section`, `PATCH`) guarded by that section's hash, so concurrent edits elsewhere in the document don't conflict.
 - **Section-level sync.** A queue of stale sections, side-by-side diffs, conflict detection, and one-click resolution for formatting-only changes. A document with one variant is outside sync until its second variant is written, and the web UI counts only the sections a person must act on.
 - **Shared diagrams.** Mermaid fences are shared by both variants: editing one never marks the other variant stale, and edits to the human variant's diagram carry over to an identical copy in the AI variant. Inline error reporting in the editor preview; themed rendering with expand, zoom, source, copy and SVG download.
+- **History and restore.** Every write is a revision. Restoring one writes the old content as a new revision and also restores the other variant's sections that were in sync with it, previewed before writing.
 - **Agent translation with review.** Agents submit translations as proposals; a person accepts or rejects them.
 - **Project inheritance.** Child projects inherit documents (shared glossary, style rules, translation guide) and can override any of them.
 - **Transclusion and links.** `{{include project:doc#section}}` directives, `[[wiki links]]`, backlinks.

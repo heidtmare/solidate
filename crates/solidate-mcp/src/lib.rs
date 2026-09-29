@@ -26,7 +26,7 @@ use solidate_app::core::edit::span_hash;
 use solidate_app::core::sources::Files;
 use solidate_app::core::{DocPath, Hash, SectionTarget, Variant, analyze};
 use solidate_app::db::Expect;
-use solidate_app::{App, AppError, Credential, Ctx, Propose, PutDoc, PutSection, SourceReport};
+use solidate_app::{App, AppError, Credential, Ctx, Propose, PutDoc, PutSection, Restore, SourceReport};
 use time::format_description::well_known::Rfc3339;
 
 const INSTRUCTIONS: &str = "Solidate stores project documentation as one ground truth written twice: every document \
@@ -62,7 +62,11 @@ sections whose files changed since they were last verified (or were never verifi
 it is still accurate, call verify_sources. Drift is computed against file hashes reported with report_sources \
 (git blob ids, e.g. from `git ls-files -s`), usually by CI.\n\n\
 changes_since lists the documents changed since a cursor from a previous call or a timestamp, with the section \
-anchors added, changed and removed per variant. Keep the returned cursor to continue from it next time.";
+anchors added, changed and removed per variant. Keep the returned cursor to continue from it next time.\n\n\
+A restore writes an earlier revision back (doc_history marks such revisions with restored_from; changes_since \
+lists them per variant). A restore is not new content: do not re-apply what it undid. When a stale section's \
+get_sync_item carries `paired`, that is the stale side's earlier text already in sync with the other side; \
+write it back instead of translating again. Use restore_revision to undo your own faulty write.";
 
 type ToolResult = Result<CallToolResult, McpError>;
 
@@ -274,6 +278,22 @@ pub struct HistoryArgs {
     pub variant: Option<String>,
     /// Maximum revisions (default 20).
     pub limit: Option<i64>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct RestoreArgs {
+    pub project: String,
+    pub path: String,
+    /// Revision id from doc_history.
+    pub revision: String,
+    /// content_hash of the current head of the revision's variant.
+    pub base_hash: String,
+    /// Also restore the other variant's sections that were in sync with the restored text (default true).
+    pub companion: Option<bool>,
+    pub message: Option<String>,
+    /// Return the result without writing it.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -817,10 +837,62 @@ impl SolidateMcp {
                 json!({
                     "revision": r.id.to_string(), "content_hash": r.content_hash,
                     "message": r.message, "created_at": r.created_at.format(&Rfc3339).ok(),
+                    "restored_from": r.restored_from.map(|id| id.to_string()),
                 })
             })
             .collect();
         ok(json!(out))
+    }
+
+    #[tool(
+        description = "Write an earlier revision's content back as the head of its variant (a new revision). With companion (default), sections of the other variant that were in sync with the restored text are restored too and their sync base recorded again; the rest stay in the sync queue. dry_run returns the diffs without writing."
+    )]
+    async fn restore_revision(&self, Parameters(a): Parameters<RestoreArgs>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let path = try_app!(parse_path(&a.path));
+        let Ok(revision) = a.revision.parse() else {
+            return fail(AppError::Invalid("revision must be a revision id".into()));
+        };
+        let base = try_app!(parse_hash(Some(&a.base_hash))).map_or(Expect::Any, Expect::Head);
+        let r = try_app!(
+            self.app
+                .restore(
+                    &ctx,
+                    Restore {
+                        project: &a.project,
+                        path: &path,
+                        revision,
+                        expect: base,
+                        message: a.message.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+                        companion: a.companion.unwrap_or(true),
+                        dry_run: a.dry_run,
+                    },
+                )
+                .await
+        );
+        let pending: Vec<Value> = r
+            .sync
+            .iter()
+            .filter(|s| s.state.needs_attention())
+            .map(|s| json!({ "anchor": s.anchor, "state": s.state, "stale_side": s.state.stale_side() }))
+            .collect();
+        ok(json!({
+            "path": r.put.document.path,
+            "variant": r.put.revision.variant,
+            "content_hash": r.put.revision.content_hash,
+            "changed": r.put.created,
+            "dry_run": r.dry_run,
+            "diff": r.diff,
+            "companion": r.companion.as_ref().map(|c| json!({
+                "variant": c.revision.variant,
+                "content_hash": c.revision.content_hash,
+                "anchors": c.anchors,
+                "diff": c.diff,
+            })),
+            "skipped": r.skipped,
+            "reconciled": r.reconciled,
+            "sync_pending": pending,
+        }))
     }
 
     #[tool(description = "The llms.txt index of a project: one line per document with its title and path.")]

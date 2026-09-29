@@ -93,6 +93,32 @@ There are three ways to bring a pair back in sync.
 The first time a variant is written while its counterpart already exists,
 sections present in both are marked in sync automatically.
 
+## Restoring an earlier version {#restore}
+
+Every revision in a variant's history can be restored. Restoring never moves
+back in history: it writes the old content as a new revision, marked with the
+revision it came from, so the change feed, audit log and concurrency checks
+treat it like any other write. The web UI previews the result before anything
+is written.
+
+Restoring one variant also takes care of the other one where it can:
+
+- If the other variant has not caught up with the change being undone, nothing
+  else is needed. The restored text matches the last reconciliation again, so
+  the section is back in sync.
+- If the other variant was already translated, Solidate restores it too, to the
+  text that was in sync with the restored one. This companion restore can be
+  switched off in the preview. Sections the other variant changed since they
+  were last in sync are left alone and appear in the queue.
+- If the change being undone was marked in sync (for example, an agent's faulty
+  write listed in `resolves`), restoring it brings back the earlier
+  reconciliation instead of asking someone to update the other variant.
+
+Solidate knows which texts were once in sync because it keeps every recorded
+reconciliation, not only the current one. A sync item whose other side went
+back to an earlier version includes the stale side's matching earlier text, so
+an agent can write it back without translating again.
+
 ## Turning sync off {#disable}
 
 Some documents, like a changelog, only make sense in one variant. Sync can be

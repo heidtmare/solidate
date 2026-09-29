@@ -1,10 +1,10 @@
-//! Document reads and writes, history, revisions, and backlinks.
+//! Document reads and writes, history, revisions, restores, and backlinks.
 
 use serde::{Deserialize, Serialize};
 use solidate_app::core::edit::span_hash;
 use solidate_app::core::{Hash, SectionTarget, Variant, analyze};
 use solidate_app::db::Expect;
-use solidate_app::{AppError, PutDoc, PutSection};
+use solidate_app::{AppError, PutDoc, PutSection, Restore};
 use time::OffsetDateTime;
 use topcoat::Result;
 use topcoat::context::Cx;
@@ -428,6 +428,9 @@ struct RevisionOut {
     /// `user`, `token`, or `system`.
     author: &'static str,
     message: Option<String>,
+    /// The revision whose content this one restored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    restored_from: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
 }
@@ -443,6 +446,7 @@ fn revision_out(r: &solidate_app::db::Revision) -> RevisionOut {
             _ => "system",
         },
         message: r.message.clone(),
+        restored_from: r.restored_from.map(|id| id.to_string()),
         created_at: r.created_at,
     }
 }
@@ -491,6 +495,114 @@ async fn revision_inner(cx: &Cx) -> ApiResult {
             diff: &d.diff,
         },
     ))
+}
+
+#[derive(Deserialize)]
+struct RestoreBody {
+    revision: String,
+    /// Also restore the other variant's paired sections.
+    #[serde(default = "yes")]
+    companion: bool,
+    message: Option<String>,
+    /// Return the result without writing it.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Writes an earlier revision's content back as the head of its variant. JSON body
+/// `{revision, companion?, message?, dry_run?}`; `If-Match` applies to the head of
+/// the revision's variant and is required unless `dry_run`.
+#[route(POST "/api/v1/projects/{project}/restore/{*path}")]
+async fn api_restore(cx: &Cx, body: String) -> Result<Response> {
+    finish(restore_inner(cx, body).await)
+}
+
+async fn restore_inner(cx: &Cx, body: String) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let (project, path) = (path_param_segment(cx, "project"), doc_path(cx)?);
+    let req = serde_json::from_str::<RestoreBody>(&body)
+        .map_err(|e| ApiError::bad_request(format!("invalid JSON body: {e}")))?;
+    let revision = req
+        .revision
+        .parse()
+        .map_err(|_| ApiError::bad_request("revision must be a revision id"))?;
+    let expect = match req.dry_run {
+        true => optional_write_precondition(cx)?.unwrap_or(Expect::Any),
+        false => write_precondition(cx)?,
+    };
+    let r = app(cx)
+        .restore(
+            &ctx,
+            Restore {
+                project,
+                path: &path,
+                revision,
+                expect,
+                message: req.message.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+                companion: req.companion,
+                dry_run: req.dry_run,
+            },
+        )
+        .await?;
+    #[derive(Serialize)]
+    struct CompanionOut<'a> {
+        variant: Variant,
+        revision: String,
+        content_hash: Hash,
+        anchors: &'a [String],
+        diff: &'a str,
+    }
+    #[derive(Serialize)]
+    struct Out<'a> {
+        path: &'a str,
+        variant: Variant,
+        restored_from: String,
+        revision: String,
+        content_hash: Hash,
+        changed: bool,
+        dry_run: bool,
+        diff: &'a str,
+        companion: Option<CompanionOut<'a>>,
+        skipped: &'a [String],
+        reconciled: &'a [String],
+        sync: Vec<SyncOut<'a>>,
+    }
+    let res = json(
+        StatusCode::OK,
+        &Out {
+            path: &r.put.document.path,
+            variant: r.put.revision.variant,
+            restored_from: r.restored_from.id.to_string(),
+            revision: r.put.revision.id.to_string(),
+            content_hash: r.put.revision.content_hash,
+            changed: r.put.created,
+            dry_run: r.dry_run,
+            diff: &r.diff,
+            companion: r.companion.as_ref().map(|c| CompanionOut {
+                variant: c.revision.variant,
+                revision: c.revision.id.to_string(),
+                content_hash: c.revision.content_hash,
+                anchors: &c.anchors,
+                diff: &c.diff,
+            }),
+            skipped: &r.skipped,
+            reconciled: &r.reconciled,
+            sync: r
+                .sync
+                .iter()
+                .filter(|s| s.state.needs_attention())
+                .map(|s| SyncOut {
+                    anchor: &s.anchor,
+                    state: s.state,
+                })
+                .collect(),
+        },
+    );
+    Ok(with_etag(res, (!r.dry_run).then_some(r.put.revision.content_hash)))
 }
 
 #[route(GET "/api/v1/projects/{project}/backlinks/{*path}")]

@@ -55,6 +55,8 @@ pub struct VariantChange {
     pub authors: Vec<ChangeAuthor>,
     /// Revision messages in write order.
     pub messages: Vec<String>,
+    /// Revisions whose content was restored in the window, in write order.
+    pub restored_from: Vec<RevisionId>,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
@@ -230,6 +232,7 @@ fn variant_change(
         removed,
         authors,
         messages: g.iter().filter_map(|r| r.message.clone()).collect(),
+        restored_from: g.iter().filter_map(|r| r.restored_from).collect(),
         updated_at: last.created_at,
     }
 }

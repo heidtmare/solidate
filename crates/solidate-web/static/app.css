@@ -172,6 +172,8 @@ pre.numbered span.err { background: var(--del); color: var(--del-fg); }
 .editor textarea { min-height: 60vh; font-family: var(--mono); font-size: 0.9rem; resize: vertical; }
 .preview { border: 1px solid var(--line); border-radius: var(--radius); padding: 0 1rem; max-height: 70vh; overflow-y: auto; }
 .editor .actions { margin-top: 0.8rem; }
+label.check { margin: 0.8rem 0; color: var(--fg); }
+label.check input { margin: 0 0.3rem 0 0; }
 
 pre.diff, pre.source { background: var(--soft); padding: 0.6rem; border-radius: var(--radius); overflow-x: auto; white-space: pre-wrap; }
 pre.diff { white-space: normal; }

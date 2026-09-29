@@ -67,6 +67,24 @@ pub struct PutResult {
     pub diagrams_skipped: Vec<String>,
 }
 
+/// Options of [`App::put_doc_with`] that public writes do not set.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WriteOpts {
+    /// Recorded as the new revision's `restored_from`.
+    pub restored_from: Option<RevisionId>,
+    /// Carry diagram edits of a human-variant write into the AI variant.
+    pub follow_diagrams: bool,
+}
+
+impl Default for WriteOpts {
+    fn default() -> Self {
+        Self {
+            restored_from: None,
+            follow_diagrams: true,
+        }
+    }
+}
+
 /// A write of one section of a variant; see [`App::put_section`].
 pub struct PutSection<'a> {
     pub project: &'a str,
@@ -191,6 +209,17 @@ impl App {
 
     /// [`Self::put_doc`] within `tx`, without committing.
     pub(crate) async fn put_doc_tx(&self, tx: &mut TenantTx, ctx: &Ctx, req: PutDoc<'_>) -> Result<PutResult> {
+        self.put_doc_with(tx, ctx, req, WriteOpts::default()).await
+    }
+
+    /// [`Self::put_doc_tx`] with [`WriteOpts`].
+    pub(crate) async fn put_doc_with(
+        &self,
+        tx: &mut TenantTx,
+        ctx: &Ctx,
+        req: PutDoc<'_>,
+        opts: WriteOpts,
+    ) -> Result<PutResult> {
         if req.content.len() > self.config.max_doc_bytes {
             return Err(invalid(format!("document exceeds {} bytes", self.config.max_doc_bytes)));
         }
@@ -231,6 +260,7 @@ impl App {
                 author: ctx.author(),
                 message: req.message,
                 expect,
+                restored_from: opts.restored_from,
             })
             .await?;
 
@@ -239,7 +269,7 @@ impl App {
             prune_verifications(tx, document.id, req.variant, &analysis.sources).await?;
         }
         let (followed, follow) = match &previous {
-            Some(prev) if created && document.sync_enabled && req.variant == Variant::Human => {
+            Some(prev) if created && opts.follow_diagrams && document.sync_enabled && req.variant == Variant::Human => {
                 self.follow_diagrams(tx, ctx, &document, req.path, &prev.content, req.content)
                     .await?
             }
@@ -351,6 +381,7 @@ impl App {
                 author: ctx.author(),
                 message: Some(message),
                 expect: Expect::Head(head.content_hash),
+                restored_from: None,
             })
             .await?;
         let detail = json!({

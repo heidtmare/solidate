@@ -25,7 +25,7 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 | table | key columns | notes |
 |---|---|---|
 | `blobs` | `(tenant_id, hash)`, `content`, `byte_len` | content-addressed; dedup |
-| `revisions` | `id`, `document_id`, `variant`, `content_hash`, `semantic_hash`, `parent_id`, `author_user_id` \| `author_token_id`, `message`, `xid` | index `(document_id, variant, created_at DESC)`; `xid`: writing transaction, change-feed window key |
+| `revisions` | `id`, `document_id`, `variant`, `content_hash`, `semantic_hash`, `parent_id`, `author_user_id` \| `author_token_id`, `message`, `restored_from`, `xid` | index `(document_id, variant, created_at DESC)`; `xid`: writing transaction, change-feed window key; `restored_from`: revision a restore copied (heads never move back) |
 | `heads` | `(tenant_id, document_id, variant)`, `revision_id`, `content_hash`, `title`, `search` tsvector | GIN index on `search` |
 | `sections` | `(revision_id, ordinal)`, `anchor`, `title`, `level`, `parent_anchor`, `hash` | per revision; bodies sliced from blob |
 | `links` | `(document_id, variant, ordinal)`, `target_project`, `target_path`, `target_anchor` | per head; backlinks; `target_project NULL` = own project |
@@ -35,6 +35,7 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 | table | key columns | notes |
 |---|---|---|
 | `sync_bases` | `(document_id, anchor)`, `human_hash`, `ai_hash` | semantic hashes at last reconciliation |
+| `sync_base_log` | `document_id`, `anchor`, `human_hash`, `ai_hash`, `xid`, `created_at` | append-only copy of every base written; pairings for [[guide/variants-and-sync#restore]]; seeded from `sync_bases` by migration 0008 |
 | `proposals` | `id`, `document_id`, `variant`, `base_hash`, `source_hash`, `content`, `resolves[]`, `message` | UNIQUE `(tenant_id, document_id, variant)`; outdated if either head hash differs |
 
 ## Source drift {#sources}

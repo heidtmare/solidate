@@ -30,7 +30,9 @@ optional change note. The Markdown itself lives in `blobs`, keyed by content
 hash, so identical content is stored once.
 
 A `head` points at the current revision of each variant and caches what reads
-need: the title and a full-text search vector. `sections` stores the analyzed
+need: the title and a full-text search vector. A head only moves forward;
+restoring an earlier version writes a new revision whose `restored_from` names the
+revision it copies. `sections` stores the analyzed
 outline of every revision, including each section's anchor, level, parent and
 semantic hash; section bodies are sliced from the blob on demand. `links` stores
 the outgoing links of each head for backlinks.
@@ -43,7 +45,9 @@ commits after a later one; see [[reference/rest-api#changes]].
 ## Sync and proposals {#sync}
 
 `sync_bases` holds, per document and anchor, the semantic hash each side had at
-the last reconciliation. `proposals` holds at most one open translation proposal
+the last reconciliation. `sync_base_log` appends every base ever recorded, so a
+restore can find which text of one variant was in sync with a given text of the
+other; see [[guide/variants-and-sync#restore]]. `proposals` holds at most one open translation proposal
 per document variant, together with the hashes of both heads at submission time,
 which is how Solidate knows a proposal is outdated.
 

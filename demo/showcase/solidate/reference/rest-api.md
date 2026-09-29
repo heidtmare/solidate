@@ -44,6 +44,7 @@ decision flow.
 | `DELETE /projects/{p}/docs/{path}` | Delete both variants of an owned document |
 | `GET /projects/{p}/history/{path}` | Revisions of a variant, newest first |
 | `GET /projects/{p}/revisions/{rev}/{path}` | One revision and its diff from the parent |
+| `POST /projects/{p}/restore/{path}` | Restore an earlier revision; see [[guide/variants-and-sync#restore]] |
 | `GET /projects/{p}/backlinks/{path}` | Documents linking here |
 
 A write takes either raw Markdown (`Content-Type: text/markdown`, with `message`
@@ -58,6 +59,13 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 
 The response reports the new content hash, whether anything changed, and which
 sections of the document still need sync.
+
+A restore takes JSON `{revision, companion, message, dry_run}` and `If-Match` with
+the current hash of the revision's variant. `companion` defaults to true. With
+`dry_run` it needs no precondition and returns the diffs of both variants without
+writing anything. The response lists the other variant's sections that were
+restored, skipped, or whose earlier sync base was recorded again. History entries
+carry `restored_from`.
 
 `PATCH` changes a single section and leaves the rest of the variant byte for
 byte. Its JSON body names the target with `anchor` (replace; empty `content`
@@ -99,7 +107,8 @@ Each document entry says whether it was created or deleted in the window and,
 per variant, lists the section anchors added, changed and removed between the
 revision before the window and the last one in it, along with the authors and
 revision messages. Sections are compared by semantic hash, so formatting-only
-edits show up with empty lists. Writing an override of an inherited document
+edits show up with empty lists. `restored_from` lists the revisions restored in
+the window, so a client can tell an undo from new content. Writing an override of an inherited document
 counts as creating it, and the inherited entry is left out.
 
 The cursor is a database transaction bound. A change appears once every

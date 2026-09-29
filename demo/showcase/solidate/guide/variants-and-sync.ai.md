@@ -1,6 +1,6 @@
 # Variants and sync
 
-Covers: pairing, sync states, single-variant documents, diagrams, clearing, disabling.
+Covers: pairing, sync states, single-variant documents, diagrams, clearing, restoring, disabling.
 
 ## How pairing works {#pairing}
 
@@ -52,6 +52,24 @@ Covers: pairing, sync states, single-variant documents, diagrams, clearing, disa
 3. resolve without edit (typo/formatting): `POST /api/v1/projects/{p}/resolve/{path}` `{"anchors": [...]}` | `{"all": true}` | `{"paired": true}`.
 
 - auto: first write of a variant whose counterpart exists -> sections present in both reconciled.
+
+## Restoring an earlier version {#restore}
+
+- restore = new revision with the old content; `restored_from` = source revision; heads never move back. Change feed, audit (`doc.write` + `doc.restore`), `If-Match` as for any write.
+- entry points: web history "Restore" / revision page "Restore this version" -> dry-run preview -> confirm | `POST /api/v1/projects/{p}/restore/{path}` | MCP `restore_revision`. Owning project only.
+- other variant, per section changed by the restore:
+
+| situation | result |
+|---|---|
+| other side not yet translated (restored hash = base) | `in_sync`, no write |
+| other side unchanged since last sync, pairing recorded | companion restore: other side set to text last in sync with restored text; removed section removed; missing section inserted after nearest shared predecessor |
+| other side changed since last sync | `skipped`; stays in queue |
+| no pairing recorded for restored text | `skipped` |
+
+- companion default on; `companion: false` disables. Companion write message "Restore sections paired with {variant} revision {hash}"; no diagram follow.
+- base restoration: after both writes, affected section whose current `(human, ai)` hashes were ever recorded as a base -> that base recorded again (`reconciled`). Covers reverting a bad write that was marked in sync with `resolves`.
+- source of pairings: `sync_base_log` (append-only; see [[architecture/data-model#sync]]).
+- `SyncItem.paired`: stale side's text last recorded in sync with the other side's current text; present after the other side went back to an earlier version. Write it back instead of retranslating.
 
 ## Turning sync off {#disable}
 

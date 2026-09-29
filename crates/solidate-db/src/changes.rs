@@ -41,6 +41,7 @@ pub struct ChangeRevision {
     /// User or token name.
     pub author_name: Option<String>,
     pub message: Option<String>,
+    pub restored_from: Option<RevisionId>,
     pub created_at: OffsetDateTime,
 }
 
@@ -78,7 +79,7 @@ impl TenantTx {
             "SELECT r.id, r.document_id, r.variant, r.content_hash, r.parent_id,
                     CASE WHEN r.author_user_id IS NOT NULL THEN 'user'
                          WHEN r.author_token_id IS NOT NULL THEN 'token' ELSE 'system' END AS author_kind,
-                    coalesce(u.name, t.name) AS author_name, r.message, r.created_at
+                    coalesce(u.name, t.name) AS author_name, r.message, r.restored_from, r.created_at
              FROM revisions r
              JOIN documents d ON d.tenant_id = r.tenant_id AND d.id = r.document_id
              LEFT JOIN users u ON u.id = r.author_user_id

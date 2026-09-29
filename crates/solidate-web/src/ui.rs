@@ -129,6 +129,48 @@ pub fn diagram_notices(carried: Option<&str>, skipped: Option<&str>, sync_url: &
     Trusted(out)
 }
 
+/// Notice for the `restored`, `paired` and `unpaired` parameters set after a restore
+/// of variant `v`. `sync_url` is the document's translation page.
+pub fn restore_notice(
+    v: Variant,
+    restored: Option<&str>,
+    paired: Option<&str>,
+    unpaired: Option<&str>,
+    sync_url: &str,
+) -> Trusted {
+    let Some(rev) = restored.filter(|r| !r.is_empty()) else {
+        return Trusted(String::new());
+    };
+    let list = |x: Option<&str>| -> Option<String> {
+        let anchors: Vec<String> = x?
+            .split(',')
+            .filter(|a| !a.is_empty())
+            .map(|a| format!("<code>#{}</code>", escape(a)))
+            .collect();
+        (!anchors.is_empty()).then(|| anchors.join(", "))
+    };
+    let label = |v: Variant| if v == Variant::Human { "human" } else { "AI" };
+    let (v, o) = (label(v), label(v.other()));
+    let mut out = format!(
+        "<p class=\"notice ok\">Restored the {v} variant to revision <code>{}</code>.",
+        escape(rev)
+    );
+    if let Some(a) = list(paired) {
+        out.push_str(&format!(
+            " The {o} variant's {a} went back to the text that was in sync."
+        ));
+    }
+    out.push_str("</p>");
+    if let Some(a) = list(unpaired) {
+        out.push_str(&format!(
+            "<p class=\"notice\">{a} in the {o} variant changed since the last sync and were not restored. \
+             <a href=\"{}\">Review</a>.</p>",
+            escape(sync_url)
+        ));
+    }
+    Trusted(out)
+}
+
 /// Unified diff as HTML lines with `add`/`del`/`hunk` classes.
 pub fn diff_html(diff: &str) -> Trusted {
     let mut out = String::from("<pre class=\"diff\">");

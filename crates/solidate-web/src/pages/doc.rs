@@ -1,9 +1,9 @@
-//! Document view, editor, creation, history, deletion, and Markdown preview.
+//! Document view, editor, creation, history, restores, deletion, and Markdown preview.
 
 use serde::Deserialize;
 use solidate_app::core::{DocPath, Hash, SyncState, Variant, render_html};
 use solidate_app::db::Expect;
-use solidate_app::{AppError, PutDoc};
+use solidate_app::{AppError, PutDoc, Restore, RestoreResult};
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::{Form, Html};
@@ -14,8 +14,8 @@ use topcoat::view::{View, component, view};
 use crate::auth::{app, require_user, tenant_ctx};
 use crate::error::{OrHttp, http};
 use crate::ui::{
-    Trusted, action_url, diagram_notices, diff_html, doc_url, fmt_time, link_href, parse_variant, project_url,
-    tenant_url, with_diagram_report,
+    Trusted, action_url, diagram_notices, diff_html, doc_url, enc, fmt_time, link_href, parse_variant, project_url,
+    restore_notice, tenant_url, with_diagram_report,
 };
 
 fn doc_path(cx: &Cx) -> Result<DocPath> {
@@ -31,6 +31,11 @@ struct VariantQuery {
     /// Anchors reported by [`with_diagram_report`] after a save.
     carried: Option<String>,
     skipped: Option<String>,
+    /// After a restore (see [`restore_submit`]): the restored revision's short hash,
+    /// and the other variant's anchors restored with it or left for translation.
+    restored: Option<String>,
+    paired: Option<String>,
+    unpaired: Option<String>,
 }
 
 fn variant(cx: &Cx) -> Variant {
@@ -102,6 +107,13 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
         q.as_ref().and_then(|q| q.skipped.as_deref()),
         &sync_url,
     );
+    let restored = restore_notice(
+        v,
+        q.as_ref().and_then(|q| q.restored.as_deref()),
+        q.as_ref().and_then(|q| q.paired.as_deref()),
+        q.as_ref().and_then(|q| q.unpaired.as_deref()),
+        &sync_url,
+    );
     let drift_titles: Vec<(String, String)> = drifted
         .iter()
         .map(|a| {
@@ -126,6 +138,7 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
                 }
             </div>
         </div>
+        (restored)
         (notices)
         <div class="tabs">
             <a href=(doc_url(&t, &p, &ps, Variant::Human)) class=(if v == Variant::Human { "tab active" } else { "tab" })>"Human"</a>
@@ -471,6 +484,9 @@ async fn history(cx: &Cx) -> Result<impl View> {
     let (doc, revs) = app(cx).history(&ctx, project, &path, v, 100).await.or_http()?;
     let (t, p, ps) = (ctx.tenant.slug.clone(), project.to_owned(), path.as_str().to_owned());
     let owner = doc.owner.slug.clone();
+    let current = doc.head.as_ref().map(|h| h.revision_id);
+    let restorable = !doc.inherited();
+    let shorts: std::collections::HashMap<_, _> = revs.iter().map(|r| (r.id, r.content_hash.short())).collect();
     Ok(view! {
         crumbs(tenant: t.clone(), tenant_name: ctx.tenant.name.clone(), project: p.clone(), path: Some(ps.clone()))
         <h1>(format!("History of {ps} ({v})"))</h1>
@@ -478,7 +494,7 @@ async fn history(cx: &Cx) -> Result<impl View> {
             <p class="notice">(format!("Showing history of the inherited document in {owner}."))</p>
         }
         <table class="docs">
-            <thead><tr><th>"When"</th><th>"Revision"</th><th>"Author"</th><th>"Note"</th></tr></thead>
+            <thead><tr><th>"When"</th><th>"Revision"</th><th>"Author"</th><th>"Note"</th><th></th></tr></thead>
             <tbody>
                 for r in &revs {
                     let author = match (r.author_user_id, r.author_token_id) {
@@ -490,7 +506,27 @@ async fn history(cx: &Cx) -> Result<impl View> {
                         <td class="small">(fmt_time(r.created_at))</td>
                         <td><a href=(format!("/t/{t}/p/{owner}/rev/{}/{ps}", r.id))><code>(r.content_hash.short())</code></a></td>
                         <td class="small">(author)</td>
-                        <td>(r.message.clone().unwrap_or_default())</td>
+                        <td>
+                            (r.message.clone().unwrap_or_default())
+                            match r.restored_from {
+                                Some(from) => {
+                                    <span class="small muted">
+                                        " · restored from "
+                                        <a href=(format!("/t/{t}/p/{owner}/rev/{from}/{ps}"))>
+                                            <code>(shorts.get(&from).cloned().unwrap_or_else(|| "an earlier revision".to_owned()))</code>
+                                        </a>
+                                    </span>
+                                },
+                                None => "",
+                            }
+                        </td>
+                        <td class="small">
+                            if Some(r.id) == current {
+                                <span class="muted">"current"</span>
+                            } else if restorable {
+                                <a href=(format!("/t/{t}/p/{p}/restore/{}/{ps}", r.id))>"Restore"</a>
+                            }
+                        </td>
                     </tr>
                 }
             </tbody>
@@ -510,7 +546,11 @@ async fn revision(cx: &Cx) -> Result<impl View> {
         crumbs(tenant: t.clone(), tenant_name: ctx.tenant.name.clone(), project: p.clone(), path: Some(ps.clone()))
         <h1>(format!("Revision {} ({v})", d.revision.content_hash.short()))</h1>
         <p class="muted">(fmt_time(d.revision.created_at)) " · " (d.revision.message.clone().unwrap_or_default())</p>
-        <p><a href=(action_url(&t, &p, "history", &ps, v))>"Back to history"</a></p>
+        <p>
+            <a href=(action_url(&t, &p, "history", &ps, v))>"Back to history"</a>
+            " · "
+            <a href=(format!("/t/{t}/p/{p}/restore/{}/{ps}", d.revision.id))>"Restore this version"</a>
+        </p>
         if d.diff.is_empty() {
             <p class="muted">"No changes."</p>
         } else {
@@ -521,6 +561,181 @@ async fn revision(cx: &Cx) -> Result<impl View> {
             <pre class="source">(d.content.clone())</pre>
         </details>
     })
+}
+
+#[derive(Deserialize)]
+struct RestoreForm {
+    /// Content hash of the head the preview was computed against.
+    base: String,
+    message: Option<String>,
+    /// Present when the box is checked.
+    companion: Option<String>,
+}
+
+fn anchor_list(anchors: &[String]) -> String {
+    anchors.iter().map(|a| format!("#{a}")).collect::<Vec<_>>().join(", ")
+}
+
+/// Confirmation page of a restore: the result of a dry run.
+#[component]
+async fn restore_confirm(
+    tenant: String,
+    tenant_name: String,
+    project: String,
+    path: String,
+    rev: String,
+    r: RestoreResult,
+    #[default] notice: Option<String>,
+) -> Result<impl View> {
+    let v = r.restored_from.variant;
+    let o = v.other();
+    let label = |v: Variant| if v == Variant::Human { "Human" } else { "AI" };
+    let unchanged = !r.put.created;
+    let pending: Vec<String> = r
+        .sync
+        .iter()
+        .filter(|s| s.state.needs_attention())
+        .map(|s| s.anchor.clone())
+        .collect();
+    Ok(view! {
+        crumbs(tenant: tenant.clone(), tenant_name: tenant_name, project: project.clone(), path: Some(path.clone()))
+        <h1>(format!("Restore revision {} ({v})", r.restored_from.content_hash.short()))</h1>
+        <p class="muted">(fmt_time(r.restored_from.created_at)) " · " (r.restored_from.message.clone().unwrap_or_default())</p>
+        match notice {
+            Some(n) => <p class="notice">(n)</p>,
+            None => "",
+        }
+        if unchanged {
+            <p class="notice">(format!("The {} variant already has this content.", label(v)))</p>
+            <p><a class="button secondary" href=(doc_url(&tenant, &project, &path, v))>"Back to document"</a></p>
+        } else {
+            <h2>(format!("{} variant", label(v)))</h2>
+            (diff_html(&r.diff))
+            <h2>(format!("{} variant", label(o)))</h2>
+            match &r.companion {
+                Some(c) => {
+                    <p>(format!("Restored with it, to the text that was in sync: {}.", anchor_list(&c.anchors)))</p>
+                    (diff_html(&c.diff))
+                },
+                None => {
+                    <p class="muted">(format!("No {} sections to restore.", label(o)))</p>
+                },
+            }
+            if !r.skipped.is_empty() {
+                <p class="notice">(format!(
+                    "Not restored: {}. The {} variant changed these since they were last in sync, or no earlier translation is recorded.",
+                    anchor_list(&r.skipped),
+                    label(o)
+                ))</p>
+            }
+            if !pending.is_empty() {
+                <p class="small muted">(format!("Needing translation or review afterwards: {}.", anchor_list(&pending)))</p>
+            }
+            <form method="post" action=(format!("/t/{tenant}/p/{project}/restore/{rev}/{path}")) class="editor">
+                <input type="hidden" name="base" value=(r.previous_hash.to_hex())>
+                <label class="check">
+                    <input type="checkbox" name="companion" value="1" checked="">
+                    (format!(" Also restore the matching {} sections", label(o)))
+                </label>
+                <label>"Change note" <input type="text" name="message" maxlength="500"
+                    placeholder=(format!("Restore revision {}", r.restored_from.content_hash.short()))></label>
+                <div class="actions">
+                    <button type="submit">"Restore"</button>
+                    <a class="button secondary" href=(action_url(&tenant, &project, "history", &path, v))>"Cancel"</a>
+                </div>
+            </form>
+        }
+    })
+}
+
+async fn restore_preview(cx: &Cx, ctx: &solidate_app::Ctx, rev: solidate_app::db::RevisionId) -> Result<RestoreResult> {
+    let (project, path) = (path_param_segment(cx, "project"), doc_path(cx)?);
+    app(cx)
+        .restore(
+            ctx,
+            Restore {
+                project,
+                path: &path,
+                revision: rev,
+                expect: Expect::Any,
+                message: None,
+                companion: true,
+                dry_run: true,
+            },
+        )
+        .await
+        .or_http()
+}
+
+#[page("/t/{tenant}/p/{project}/restore/{rev}/{*path}")]
+async fn restore_page(cx: &Cx) -> Result<impl View> {
+    let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
+    let rev = path_param_segment(cx, "rev").parse().map_err(|_| not_found())?;
+    let r = restore_preview(cx, &ctx, rev).await?;
+    Ok(view! {
+        restore_confirm(
+            tenant: ctx.tenant.slug.clone(),
+            tenant_name: ctx.tenant.name.clone(),
+            project: path_param_segment(cx, "project").to_owned(),
+            path: doc_path(cx)?.as_str().to_owned(),
+            rev: rev.to_string(),
+            r: r,
+        )
+    })
+}
+
+#[page(POST "/t/{tenant}/p/{project}/restore/{rev}/{*path}")]
+async fn restore_submit(cx: &Cx, Form(form): Form<RestoreForm>) -> Result<impl View> {
+    let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
+    let (project, path) = (path_param_segment(cx, "project"), doc_path(cx)?);
+    let rev = path_param_segment(cx, "rev").parse().map_err(|_| not_found())?;
+    let result = app(cx)
+        .restore(
+            &ctx,
+            Restore {
+                project,
+                path: &path,
+                revision: rev,
+                expect: expect_from(&form.base)?,
+                message: form.message.as_deref().map(str::trim).filter(|m| !m.is_empty()),
+                companion: form.companion.is_some(),
+                dry_run: false,
+            },
+        )
+        .await;
+    let (t, p, ps) = (ctx.tenant.slug.clone(), project.to_owned(), path.as_str().to_owned());
+    match result {
+        Ok(r) => {
+            let v = r.restored_from.variant;
+            let mut to = doc_url(&t, &p, &ps, v);
+            let sep = if to.contains('?') { '&' } else { '?' };
+            to = format!("{to}{sep}restored={}", r.restored_from.content_hash.short());
+            let paired = r.companion.map(|c| c.anchors).unwrap_or_default();
+            for (key, anchors) in [("paired", &paired), ("unpaired", &r.skipped)] {
+                if !anchors.is_empty() {
+                    let value = anchors.iter().map(|a| enc(a)).collect::<Vec<_>>().join(",");
+                    to = format!("{to}&{key}={value}");
+                }
+            }
+            Err(see_other(to).into())
+        }
+        Err(AppError::PreconditionFailed { .. }) => {
+            let r = restore_preview(cx, &ctx, rev).await?;
+            Ok(view! {
+                (StatusCode::CONFLICT)
+                restore_confirm(
+                    tenant: t,
+                    tenant_name: ctx.tenant.name.clone(),
+                    project: p,
+                    path: ps,
+                    rev: rev.to_string(),
+                    r: r,
+                    notice: Some("The document changed since this preview. Review the updated preview, then restore again.".to_owned()),
+                )
+            })
+        }
+        Err(e) => Err(http(e)),
+    }
 }
 
 #[derive(Deserialize)]

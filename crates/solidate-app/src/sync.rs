@@ -15,6 +15,7 @@ use crate::App;
 use crate::audit::record;
 use crate::ctx::{Access, Ctx};
 use crate::error::{AppError, Result, invalid};
+use crate::history::paired_text;
 use crate::projects::project_by_slug;
 use crate::proposals::{ProposalRef, proposal_refs};
 
@@ -166,6 +167,10 @@ pub struct SyncItem {
     /// Content hashes to pass as `If-Match` when writing each variant.
     pub human_head: Option<Hash>,
     pub ai_head: Option<Hash>,
+    /// Text of the stale side that was last recorded in sync with the other side's
+    /// current text. Present when the other side went back to an earlier version,
+    /// as after a restore; writing it back needs no new translation.
+    pub paired: Option<String>,
 }
 
 fn titles(p: &Plan) -> HashMap<&str, &str> {
@@ -338,6 +343,10 @@ impl App {
                 )
             })
         };
+        let paired = match s.state.stale_side() {
+            Some(v) => paired_text(&mut tx, &document, anchor, v, s.hash(v.other()), s.hash(v)).await?,
+            None => None,
+        };
         let human_changed = matches!(s.state, SyncState::HumanAhead | SyncState::Conflict);
         let ai_changed = matches!(s.state, SyncState::AiAhead | SyncState::Conflict);
 
@@ -354,6 +363,7 @@ impl App {
             ai_base,
             human_head: p.human.map(|h| h.content_hash),
             ai_head: p.ai.map(|h| h.content_hash),
+            paired,
         })
     }
 

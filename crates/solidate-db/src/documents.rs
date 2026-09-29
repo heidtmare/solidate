@@ -32,6 +32,8 @@ pub struct NewRevision<'a> {
     pub author: Author,
     pub message: Option<&'a str>,
     pub expect: Expect,
+    /// The revision whose content this write restores.
+    pub restored_from: Option<RevisionId>,
 }
 
 macro_rules! head_select {
@@ -165,10 +167,10 @@ impl TenantTx {
         };
         let revision: Revision = sqlx::query_as(
             "INSERT INTO revisions (id, document_id, variant, content_hash, semantic_hash, parent_id,
-                                    author_user_id, author_token_id, message)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                    author_user_id, author_token_id, message, restored_from)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING id, document_id, variant, content_hash, semantic_hash, parent_id,
-                       author_user_id, author_token_id, message, created_at",
+                       author_user_id, author_token_id, message, restored_from, created_at",
         )
         .bind(RevisionId::new())
         .bind(rev.document)
@@ -179,6 +181,7 @@ impl TenantTx {
         .bind(user)
         .bind(token)
         .bind(rev.message)
+        .bind(rev.restored_from)
         .fetch_one(self.conn())
         .await?;
 
@@ -291,7 +294,7 @@ impl TenantTx {
     pub async fn revision(&mut self, id: RevisionId) -> Result<Option<Revision>> {
         Ok(sqlx::query_as(
             "SELECT id, document_id, variant, content_hash, semantic_hash, parent_id,
-                    author_user_id, author_token_id, message, created_at
+                    author_user_id, author_token_id, message, restored_from, created_at
              FROM revisions WHERE id = $1",
         )
         .bind(id)
@@ -303,7 +306,7 @@ impl TenantTx {
     pub async fn revisions(&mut self, document: DocumentId, variant: Variant, limit: i64) -> Result<Vec<Revision>> {
         Ok(sqlx::query_as(
             "SELECT id, document_id, variant, content_hash, semantic_hash, parent_id,
-                    author_user_id, author_token_id, message, created_at
+                    author_user_id, author_token_id, message, restored_from, created_at
              FROM revisions WHERE document_id = $1 AND variant = $2
              ORDER BY created_at DESC, id DESC LIMIT $3",
         )

@@ -109,6 +109,8 @@ pub struct Revision {
     pub author_user_id: Option<UserId>,
     pub author_token_id: Option<TokenId>,
     pub message: Option<String>,
+    /// The revision whose content this one restored.
+    pub restored_from: Option<RevisionId>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use solidate_core::{Hash, SyncBase};
+use solidate_core::{Hash, SyncBase, Variant};
 
 use crate::ids::*;
 use crate::{Result, TenantTx};
@@ -20,7 +20,8 @@ impl TenantTx {
             .collect())
     }
 
-    /// Upserts bases. A base with both sides `None` is deleted.
+    /// Upserts bases and appends them to `sync_base_log`. A base with both sides
+    /// `None` is deleted.
     pub async fn put_sync_bases(&mut self, document: DocumentId, bases: &[(String, SyncBase)]) -> Result<()> {
         let (gone, keep): (Vec<_>, Vec<_>) = bases.iter().partition(|(_, b)| b.human.is_none() && b.ai.is_none());
         sqlx::query("DELETE FROM sync_bases WHERE document_id = $1 AND anchor = ANY($2)")
@@ -40,7 +41,61 @@ impl TenantTx {
         .bind(keep.iter().map(|(_, b)| b.ai).collect::<Vec<_>>())
         .execute(self.conn())
         .await?;
+        sqlx::query(
+            "INSERT INTO sync_base_log (document_id, anchor, human_hash, ai_hash)
+             SELECT $1, * FROM UNNEST($2::text[], $3::bytea[], $4::bytea[])",
+        )
+        .bind(document)
+        .bind(keep.iter().map(|(a, _)| a.clone()).collect::<Vec<_>>())
+        .bind(keep.iter().map(|(_, b)| b.human).collect::<Vec<_>>())
+        .bind(keep.iter().map(|(_, b)| b.ai).collect::<Vec<_>>())
+        .execute(self.conn())
+        .await?;
         Ok(())
+    }
+
+    /// Whether `base` was ever recorded for `anchor`.
+    pub async fn sync_base_known(&mut self, document: DocumentId, anchor: &str, base: SyncBase) -> Result<bool> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sync_base_log
+                 WHERE document_id = $1 AND anchor = $2
+                   AND human_hash IS NOT DISTINCT FROM $3 AND ai_hash IS NOT DISTINCT FROM $4)",
+        )
+        .bind(document)
+        .bind(anchor)
+        .bind(base.human)
+        .bind(base.ai)
+        .fetch_one(self.conn())
+        .await?)
+    }
+
+    /// The most recently recorded base of `anchor` whose `variant` side is `hash`.
+    pub async fn sync_base_with(
+        &mut self,
+        document: DocumentId,
+        anchor: &str,
+        variant: Variant,
+        hash: Hash,
+    ) -> Result<Option<SyncBase>> {
+        let sql = match variant {
+            Variant::Human => {
+                "SELECT human_hash, ai_hash FROM sync_base_log
+                 WHERE document_id = $1 AND anchor = $2 AND human_hash = $3
+                 ORDER BY created_at DESC, xid DESC LIMIT 1"
+            }
+            Variant::Ai => {
+                "SELECT human_hash, ai_hash FROM sync_base_log
+                 WHERE document_id = $1 AND anchor = $2 AND ai_hash = $3
+                 ORDER BY created_at DESC, xid DESC LIMIT 1"
+            }
+        };
+        let row: Option<(Option<Hash>, Option<Hash>)> = sqlx::query_as(sql)
+            .bind(document)
+            .bind(anchor)
+            .bind(hash)
+            .fetch_optional(self.conn())
+            .await?;
+        Ok(row.map(|(human, ai)| SyncBase { human, ai }))
     }
 
     /// Removes bases whose anchors are not in `keep`.

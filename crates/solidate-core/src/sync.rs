@@ -86,6 +86,15 @@ pub struct SyncBase {
     pub ai: Option<Hash>,
 }
 
+impl SyncBase {
+    pub fn side(&self, variant: Variant) -> Option<Hash> {
+        match variant {
+            Variant::Human => self.human,
+            Variant::Ai => self.ai,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncState {
@@ -168,6 +177,11 @@ pub struct SectionSync {
 }
 
 impl SectionSync {
+    /// Current sync hash of `variant`'s side.
+    pub fn hash(&self, variant: Variant) -> Option<Hash> {
+        self.reconciled().side(variant)
+    }
+
     /// The base to record once this pair's current content is accepted as in sync.
     pub fn reconciled(&self) -> SyncBase {
         SyncBase {

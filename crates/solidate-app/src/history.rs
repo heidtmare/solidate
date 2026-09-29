@@ -1,4 +1,5 @@
-//! Restores: writing an earlier revision's content back as a new revision.
+//! Restores: writing an earlier revision's content back as a new revision, and
+//! undeleting documents.
 //!
 //! A restore of one variant also handles its counterpart when the document is in
 //! sync:
@@ -19,13 +20,14 @@ use solidate_core::diff::unified;
 use solidate_core::edit::{SectionTarget, splice_section};
 use solidate_core::sync::SectionSync;
 use solidate_core::{DocPath, Hash, SyncBase, SyncState, Variant, analyze};
-use solidate_db::{Document, Expect, Revision, RevisionId, TenantTx};
+use solidate_db::{DeletedDocument, Document, DocumentId, Expect, Head, ProjectId, Revision, RevisionId, TenantTx};
 
 use crate::App;
 use crate::audit::record;
 use crate::ctx::{Access, Ctx};
 use crate::docs::{PutDoc, PutResult, WriteOpts};
 use crate::error::{AppError, Result, invalid};
+use crate::projects::project_by_slug;
 use crate::sync::{doc_plan, own_doc, reconcile_anchors};
 
 pub struct Restore<'a> {
@@ -73,6 +75,14 @@ pub struct CompanionWrite {
     pub anchors: Vec<String>,
     /// Unified diff of the other variant, previous head → written content.
     pub diff: String,
+}
+
+/// A deleted document with the last head of each variant.
+#[derive(Debug, Clone)]
+pub struct DeletedDocView {
+    pub document: DeletedDocument,
+    pub human: Option<Head>,
+    pub ai: Option<Head>,
 }
 
 fn by_anchor(plan: &[SectionSync]) -> HashMap<&str, &SectionSync> {
@@ -384,4 +394,54 @@ impl App {
         }
         Ok(result)
     }
+
+    /// Deleted documents owned by `project`, newest deletion first.
+    pub async fn deleted_docs(&self, ctx: &Ctx, project: &str) -> Result<Vec<DeletedDocument>> {
+        let mut tx = self.tx(ctx).await?;
+        let p = project_by_slug(&mut tx, project).await?;
+        ctx.require(Access::Read, Some(&p))?;
+        Ok(tx.deleted_documents(p.id).await?)
+    }
+
+    /// A deleted document owned by `project`, with its last content.
+    pub async fn deleted_doc(&self, ctx: &Ctx, project: &str, id: DocumentId) -> Result<DeletedDocView> {
+        let mut tx = self.tx(ctx).await?;
+        let p = project_by_slug(&mut tx, project).await?;
+        ctx.require(Access::Read, Some(&p))?;
+        let document = deleted_in(&mut tx, p.id, id).await?;
+        Ok(DeletedDocView {
+            human: tx.head(id, Variant::Human).await?,
+            ai: tx.head(id, Variant::Ai).await?,
+            document,
+        })
+    }
+
+    /// Makes a deleted document owned by `project` live again at its path, with its
+    /// revisions, sync bases and proposals as they were. Fails with `AlreadyExists`
+    /// when a live document holds the path.
+    pub async fn undelete_doc(&self, ctx: &Ctx, project: &str, id: DocumentId) -> Result<Document> {
+        let mut tx = self.tx(ctx).await?;
+        let p = project_by_slug(&mut tx, project).await?;
+        ctx.require(Access::Write, Some(&p))?;
+        let deleted = deleted_in(&mut tx, p.id, id).await?;
+        let document = tx.undelete_document(id).await.map_err(|e| match AppError::from(e) {
+            AppError::AlreadyExists(_) => AppError::AlreadyExists(format!(
+                "a document exists at {}; delete it before restoring this one",
+                deleted.path
+            )),
+            e => e,
+        })?;
+        let detail = json!({ "document": id, "deleted_at": deleted.deleted_at.unix_timestamp() });
+        record(&mut tx, ctx, "doc.undelete", Some(p.id), Some(&document.path), detail).await?;
+        tx.commit().await?;
+        Ok(document)
+    }
+}
+
+/// The deleted document `id` owned by `project`.
+async fn deleted_in(tx: &mut TenantTx, project: ProjectId, id: DocumentId) -> Result<DeletedDocument> {
+    tx.deleted_document(id)
+        .await?
+        .filter(|d| d.project_id == project)
+        .ok_or(AppError::NotFound)
 }

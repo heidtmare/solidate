@@ -46,6 +46,34 @@ macro_rules! head_select {
     };
 }
 
+/// Columns of [`DeletedDocument`]; filters on `d.deleted_at IS NOT NULL`.
+macro_rules! deleted_select {
+    () => {
+        "SELECT d.id, d.project_id, d.path, d.title, d.deleted_at,
+                CASE WHEN d.deleted_by_user IS NOT NULL THEN 'user'
+                     WHEN d.deleted_by_token IS NOT NULL THEN 'token' ELSE 'system' END AS deleted_by_kind,
+                coalesce(u.name, t.name) AS deleted_by_name,
+                h.content_hash AS human_hash, a.content_hash AS ai_hash, d.updated_at
+         FROM documents d
+         LEFT JOIN users u ON u.id = d.deleted_by_user
+         LEFT JOIN api_tokens t ON t.tenant_id = d.tenant_id AND t.id = d.deleted_by_token
+         LEFT JOIN heads h ON h.tenant_id = d.tenant_id AND h.document_id = d.id AND h.variant = 'human'
+         LEFT JOIN heads a ON a.tenant_id = d.tenant_id AND a.document_id = d.id AND a.variant = 'ai'
+         WHERE d.deleted_at IS NOT NULL AND"
+    };
+}
+
+impl Author {
+    /// `(user, token)` author columns.
+    fn ids(self) -> (Option<UserId>, Option<TokenId>) {
+        match self {
+            Author::User(u) => (Some(u), None),
+            Author::Token(t) => (None, Some(t)),
+            Author::System => (None, None),
+        }
+    }
+}
+
 impl TenantTx {
     pub async fn create_document(&mut self, project: ProjectId, path: &DocPath) -> Result<Document> {
         Ok(
@@ -93,16 +121,60 @@ impl TenantTx {
         .await?)
     }
 
-    pub async fn delete_document(&mut self, id: DocumentId) -> Result<()> {
+    pub async fn delete_document(&mut self, id: DocumentId, by: Author) -> Result<()> {
+        let (user, token) = by.ids();
         let n = sqlx::query(
-            "UPDATE documents SET deleted_at = now(), deleted_xid = pg_current_xact_id()
+            "UPDATE documents SET deleted_at = now(), deleted_xid = pg_current_xact_id(),
+                                  deleted_by_user = $2, deleted_by_token = $3
              WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(id)
+        .bind(user)
+        .bind(token)
         .execute(self.conn())
         .await?
         .rows_affected();
         if n == 0 { Err(DbError::NotFound) } else { Ok(()) }
+    }
+
+    /// Deleted documents of `project`, newest deletion first.
+    pub async fn deleted_documents(&mut self, project: ProjectId) -> Result<Vec<DeletedDocument>> {
+        Ok(sqlx::query_as(concat!(
+            deleted_select!(),
+            " d.project_id = $1 ORDER BY d.deleted_at DESC, d.id"
+        ))
+        .bind(project)
+        .fetch_all(self.conn())
+        .await?)
+    }
+
+    pub async fn deleted_document(&mut self, id: DocumentId) -> Result<Option<DeletedDocument>> {
+        Ok(sqlx::query_as(concat!(deleted_select!(), " d.id = $1"))
+            .bind(id)
+            .fetch_optional(self.conn())
+            .await?)
+    }
+
+    /// Makes a deleted document live again. Fails with `AlreadyExists` when a live
+    /// document holds its path, `NotFound` when it is not deleted.
+    pub async fn undelete_document(&mut self, id: DocumentId) -> Result<Document> {
+        let r = sqlx::query_as(
+            "UPDATE documents SET deleted_at = NULL, deleted_xid = NULL, deleted_by_user = NULL,
+                                  deleted_by_token = NULL, restored_at = now(), restored_xid = pg_current_xact_id()
+             WHERE id = $1 AND deleted_at IS NOT NULL
+             RETURNING *",
+        )
+        .bind(id)
+        .fetch_optional(self.conn())
+        .await;
+        match r {
+            Ok(Some(d)) => Ok(d),
+            Ok(None) => Err(DbError::NotFound),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                Err(DbError::AlreadyExists("a live document holds this path".into()))
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub async fn set_sync_enabled(&mut self, id: DocumentId, enabled: bool) -> Result<()> {
@@ -160,11 +232,7 @@ impl TenantTx {
             .execute(self.conn())
             .await?;
 
-        let (user, token) = match rev.author {
-            Author::User(u) => (Some(u), None),
-            Author::Token(t) => (None, Some(t)),
-            Author::System => (None, None),
-        };
+        let (user, token) = rev.author.ids();
         let revision: Revision = sqlx::query_as(
             "INSERT INTO revisions (id, document_id, variant, content_hash, semantic_hash, parent_id,
                                     author_user_id, author_token_id, message, restored_from)

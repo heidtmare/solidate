@@ -179,7 +179,7 @@ async fn revisions_heads_sections_links(pool: PgPoolOptions, opts: PgConnectOpti
             .is_empty()
     );
 
-    tx.delete_document(other.id).await.unwrap();
+    tx.delete_document(other.id, Author::System).await.unwrap();
     assert_eq!(tx.documents(p.id).await.unwrap().len(), 1);
     // Path can be reused after deletion.
     tx.create_document(p.id, &path("design/sessions")).await.unwrap();

@@ -47,7 +47,7 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `affected_sections` | `project`, `paths` | bound sections matching any path; no report needed |
 | `context_for_paths` | `project`, `paths`, `variant?` (default `ai`) | `[{path, document_title, anchor, section_title, variant, content, hash, content_hash, paths, links}]`; section only in other variant -> that variant; `links`: `project:path#anchor`; no report needed |
 | `verify_sources` | `project`, `path`, `anchors`, `revision?` | doc drift entries; `revision` != current report -> error |
-| `changes_since` | `project`, `since?` (cursor \| RFC 3339) | `{cursor, documents}`; no `since` -> cursor only; see [[reference/rest-api#changes]] |
+| `changes_since` | `project`, `since?` (cursor \| RFC 3339) | `{cursor, documents}`; no `since` -> cursor only; `restored` = undeleted; see [[reference/rest-api#changes]] |
 
 - `variant` default: `human`; except `read_doc` (`ai`, fallback `human`; response `variant` = variant read) and `search` (both variants).
 

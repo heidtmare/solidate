@@ -66,7 +66,8 @@ anchors added, changed and removed per variant. Keep the returned cursor to cont
 A restore writes an earlier revision back (doc_history marks such revisions with restored_from; changes_since \
 lists them per variant). A restore is not new content: do not re-apply what it undid. When a stale section's \
 get_sync_item carries `paired`, that is the stale side's earlier text already in sync with the other side; \
-write it back instead of translating again. Use restore_revision to undo your own faulty write.";
+write it back instead of translating again. Use restore_revision to undo your own faulty write. A document \
+marked restored in changes_since was undeleted with its earlier content; read it before relying on a local copy.";
 
 type ToolResult = Result<CallToolResult, McpError>;
 
@@ -769,7 +770,7 @@ impl SolidateMcp {
     }
 
     #[tool(
-        description = "Documents changed since a cursor or RFC 3339 timestamp: per variant, the section anchors added, changed and removed, the authors and revision messages; plus created and deleted documents. Store the returned cursor and pass it as since next time."
+        description = "Documents changed since a cursor or RFC 3339 timestamp: per variant, the section anchors added, changed and removed, the authors and revision messages; plus created, deleted and restored (undeleted) documents. Store the returned cursor and pass it as since next time."
     )]
     async fn changes_since(&self, Parameters(a): Parameters<ChangesArgs>, ext: Extensions) -> ToolResult {
         let ctx = try_app!(self.ctx(&ext).await);

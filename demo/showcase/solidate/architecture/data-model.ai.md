@@ -18,7 +18,7 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 |---|---|---|
 | `memberships` | `(tenant_id, user_id)`, `role` | `reader\|editor\|admin` |
 | `projects` | `id`, `slug` (unique per tenant), `parent_id`, `settings` jsonb | parent FK `ON DELETE RESTRICT`; no self-parent |
-| `documents` | `id`, `project_id`, `path`, `title`, `sync_enabled`, `deleted_at`, `xid`, `deleted_xid` | soft delete; unique `(tenant_id, project_id, path) WHERE deleted_at IS NULL`; `xid8` columns for [[reference/rest-api#changes]] |
+| `documents` | `id`, `project_id`, `path`, `title`, `sync_enabled`, `deleted_at`, `deleted_by_user` \| `deleted_by_token`, `restored_at`, `xid`, `deleted_xid`, `restored_xid` | soft delete; unique `(tenant_id, project_id, path) WHERE deleted_at IS NULL`; undelete clears `deleted_*`, sets `restored_*` ([[guide/variants-and-sync#undelete]]); `xid8` columns for [[reference/rest-api#changes]] |
 
 ## Revisions and heads {#revisions}
 
@@ -55,7 +55,7 @@ PostgreSQL. Global vs tenant-scoped tables. Content never rewritten: append-only
 | `api_tokens` | `id`, `prefix` UNIQUE, `secret_hash`, `scopes[]`, `project_id`, `expires_at`, `last_used_at`, `revoked_at` | scopes subset of `read,write,admin` |
 | `audit_log` | `id` (UUIDv7), `at`, `actor_kind` (`user\|token\|system`), `actor_user_id`, `actor_token_id`, `action`, `project_id`, `target`, `detail` jsonb | `solidate_app`: SELECT, INSERT only; no FKs on actors |
 
-- audit actions: `tenant.create`, `member.set`, `project.create`, `project.set_parent`, `project.settings`, `token.create`, `token.revoke`, `doc.write`, `doc.delete`, `doc.sync_setting`, `sync.resolve`, `proposal.submit`, `proposal.accept`, `proposal.reject`, `sources.report`, `sources.verify`.
+- audit actions: `tenant.create`, `member.set`, `project.create`, `project.set_parent`, `project.settings`, `token.create`, `token.revoke`, `doc.write`, `doc.restore`, `doc.delete`, `doc.undelete`, `doc.sync_setting`, `sync.resolve`, `proposal.submit`, `proposal.accept`, `proposal.reject`, `sources.report`, `sources.verify`.
 
 ## Tenant keys everywhere {#tenant-keys}
 

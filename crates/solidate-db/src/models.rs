@@ -86,6 +86,25 @@ pub struct DocumentSummary {
     pub updated_at: OffsetDateTime,
 }
 
+/// A deleted document with who deleted it and each variant's last head.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
+pub struct DeletedDocument {
+    pub id: DocumentId,
+    pub project_id: ProjectId,
+    pub path: String,
+    pub title: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub deleted_at: OffsetDateTime,
+    /// `user`, `token` or `system`.
+    pub deleted_by_kind: String,
+    /// User or token name.
+    pub deleted_by_name: Option<String>,
+    pub human_hash: Option<Hash>,
+    pub ai_hash: Option<Hash>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct Head {
     pub document_id: DocumentId,

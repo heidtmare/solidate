@@ -499,15 +499,17 @@ impl App {
     }
 
     /// Deletes the document owned by `project`. Inherited documents cannot be deleted
-    /// from a descendant.
-    pub async fn delete_doc(&self, ctx: &Ctx, project: &str, path: &DocPath) -> Result<()> {
+    /// from a descendant. Revisions are kept; see [`App::undelete_doc`].
+    pub async fn delete_doc(&self, ctx: &Ctx, project: &str, path: &DocPath) -> Result<Document> {
         let mut tx = self.tx(ctx).await?;
         let p = project_by_slug(&mut tx, project).await?;
         ctx.require(Access::Write, Some(&p))?;
         let d = tx.document_by_path(p.id, path).await?.ok_or(AppError::NotFound)?;
-        tx.delete_document(d.id).await?;
-        record(&mut tx, ctx, "doc.delete", Some(p.id), Some(path.as_str()), json!({})).await?;
-        Ok(tx.commit().await?)
+        tx.delete_document(d.id, ctx.author()).await?;
+        let detail = json!({ "document": d.id });
+        record(&mut tx, ctx, "doc.delete", Some(p.id), Some(path.as_str()), detail).await?;
+        tx.commit().await?;
+        Ok(d)
     }
 
     pub async fn set_doc_sync(&self, ctx: &Ctx, project: &str, path: &DocPath, enabled: bool) -> Result<()> {

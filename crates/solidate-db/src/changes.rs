@@ -15,7 +15,7 @@ pub struct ChangeWindow {
     pub since: Option<OffsetDateTime>,
 }
 
-/// A document with revisions or a deletion in a window.
+/// A document with revisions, a deletion or an undelete in a window.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ChangedDocument {
     pub id: DocumentId,
@@ -24,8 +24,10 @@ pub struct ChangedDocument {
     pub title: Option<String>,
     /// Created in the window.
     pub created: bool,
-    /// Deleted in the window.
+    /// Deleted in the window, and not restored since.
     pub deleted: bool,
+    /// Restored from deletion in the window, and not deleted since.
+    pub restored: bool,
 }
 
 /// A revision in a window, with its author's display name.
@@ -96,7 +98,7 @@ impl TenantTx {
         .await?)
     }
 
-    /// `documents` plus the documents of `projects` deleted in `w`.
+    /// `documents` plus the documents of `projects` deleted or restored in `w`.
     pub async fn changed_documents(
         &mut self,
         projects: &[ProjectId],
@@ -110,11 +112,16 @@ impl TenantTx {
             " AS created,
                     coalesce(",
             in_window!("deleted_xid", "deleted_at"),
-            ", false) AS deleted
+            ", false) AS deleted,
+                    deleted_at IS NULL AND coalesce(",
+            in_window!("restored_xid", "restored_at"),
+            ", false) AS restored
              FROM documents
-             WHERE id = ANY($5) OR (project_id = ANY($4) AND ",
+             WHERE id = ANY($5) OR (project_id = ANY($4) AND (",
             in_window!("deleted_xid", "deleted_at"),
-            ") ORDER BY path, id"
+            " OR (deleted_at IS NULL AND ",
+            in_window!("restored_xid", "restored_at"),
+            "))) ORDER BY path, id"
         ))
         .bind(&w.hi)
         .bind(&w.lo)

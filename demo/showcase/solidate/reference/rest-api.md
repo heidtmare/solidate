@@ -45,6 +45,9 @@ decision flow.
 | `GET /projects/{p}/history/{path}` | Revisions of a variant, newest first |
 | `GET /projects/{p}/revisions/{rev}/{path}` | One revision and its diff from the parent |
 | `POST /projects/{p}/restore/{path}` | Restore an earlier revision; see [[guide/variants-and-sync#restore]] |
+| `GET /projects/{p}/deleted` | Deleted documents owned by the project, newest first |
+| `GET /projects/{p}/deleted/{id}` | One deleted document with the last content of each variant |
+| `POST /projects/{p}/deleted/{id}/restore` | Restore a deleted document; see [[guide/variants-and-sync#undelete]] |
 | `GET /projects/{p}/backlinks/{path}` | Documents linking here |
 
 A write takes either raw Markdown (`Content-Type: text/markdown`, with `message`
@@ -66,6 +69,10 @@ the current hash of the revision's variant. `companion` defaults to true. With
 writing anything. The response lists the other variant's sections that were
 restored, skipped, or whose earlier sync base was recorded again. History entries
 carry `restored_from`.
+
+Deleted documents are addressed by id, since several deleted documents can share
+a path. Restoring one returns `409 already_exists` while a live document holds
+its path.
 
 `PATCH` changes a single section and leaves the rest of the variant byte for
 byte. Its JSON body names the target with `anchor` (replace; empty `content`
@@ -103,7 +110,7 @@ curl -H "Authorization: Bearer $SOLIDATE_TOKEN" \
   "http://localhost:3000/api/v1/projects/solidate/changes?since=81234"
 ```
 
-Each document entry says whether it was created or deleted in the window and,
+Each document entry says whether it was created, deleted or restored from deletion in the window and,
 per variant, lists the section anchors added, changed and removed between the
 revision before the window and the last one in it, along with the authors and
 revision messages. Sections are compared by semantic hash, so formatting-only

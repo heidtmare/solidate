@@ -1079,3 +1079,78 @@ async fn restore_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
         (Some(true), Some(true))
     );
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn undelete_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, router, rw, ro) = setup(pool, opts).await;
+    let api = Api {
+        router: router.clone(),
+        auth: rw.clone(),
+    };
+    let create = |content: &'static str| {
+        let api = &api;
+        async move {
+            let r = api
+                .req(
+                    "PUT",
+                    "/api/v1/projects/shared/docs/auth",
+                    &[("content-type", "text/markdown"), ("if-none-match", "*")],
+                    Some(content),
+                )
+                .await;
+            assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+        }
+    };
+    create("# Auth\n\nTokens are opaque.\n").await;
+    let r = api.req("DELETE", "/api/v1/projects/shared/docs/auth", &[], None).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+
+    let list = api
+        .req("GET", "/api/v1/projects/shared/deleted", &[], None)
+        .await
+        .json();
+    assert_eq!(list[0]["path"], "auth");
+    assert_eq!(
+        (list[0]["deleted_by"].as_str(), list[0]["deleted_by_name"].as_str()),
+        (Some("token"), Some("rw"))
+    );
+    let id = list[0]["id"].as_str().unwrap().to_owned();
+    let d = api
+        .req("GET", &format!("/api/v1/projects/shared/deleted/{id}"), &[], None)
+        .await
+        .json();
+    assert_eq!(d["human"], "# Auth\n\nTokens are opaque.\n");
+    assert!(d["ai"].is_null());
+
+    let restore = format!("/api/v1/projects/shared/deleted/{id}/restore");
+    let readonly = Api {
+        router: router.clone(),
+        auth: ro,
+    };
+    assert_eq!(
+        readonly.req("POST", &restore, &[], None).await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    create("# Other\n").await;
+    let r = api.req("POST", &restore, &[], None).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    api.req("DELETE", "/api/v1/projects/shared/docs/auth", &[], None).await;
+
+    let r = api.req("POST", &restore, &[], None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.json()["path"], "auth");
+    let doc = api
+        .req("GET", "/api/v1/projects/shared/docs/auth?format=md", &[], None)
+        .await;
+    assert_eq!(doc.body, "# Auth\n\nTokens are opaque.\n");
+    assert_eq!(api.req("POST", &restore, &[], None).await.status, StatusCode::NOT_FOUND);
+    // Only the owning project lists or restores it.
+    let r = api.req("POST", &restore.replace("shared", "app"), &[], None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    let list = api
+        .req("GET", "/api/v1/projects/shared/deleted", &[], None)
+        .await
+        .json();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+}

@@ -1578,3 +1578,96 @@ async fn restores(pool: PgPoolOptions, opts: PgConnectOptions) {
     let r = restore(&app, &ctx, "auth", r6.id, true, false).await;
     assert!(!r.put.created);
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn undeletes(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, ctx) = setup(pool, opts).await;
+    let h = "# Auth\n\nTokens are opaque.\n";
+    let a = "# Auth\n\n- tokens: opaque\n";
+    put(&app, &ctx, "app", "auth", Variant::Human, h, Expect::Absent, &[])
+        .await
+        .unwrap();
+    let last = put(&app, &ctx, "app", "auth", Variant::Ai, a, Expect::Absent, &["auth"])
+        .await
+        .unwrap();
+    app.delete_doc(&ctx, "app", &path("auth")).await.unwrap();
+
+    let deleted = app.deleted_docs(&ctx, "app").await.unwrap();
+    assert_eq!(deleted.len(), 1);
+    let first = deleted[0].id;
+    assert_eq!(
+        (deleted[0].path.as_str(), deleted[0].deleted_by_kind.as_str()),
+        ("auth", "system")
+    );
+    assert_eq!(deleted[0].ai_hash, Some(Hash::of(a)));
+    let v = app.deleted_doc(&ctx, "app", first).await.unwrap();
+    assert_eq!(v.human.unwrap().content, h);
+    // Owned by "app" only.
+    assert!(app.deleted_docs(&ctx, "shared").await.unwrap().is_empty());
+    assert!(matches!(
+        app.undelete_doc(&ctx, "shared", first).await,
+        Err(AppError::NotFound)
+    ));
+
+    // A live document at the path blocks the undelete.
+    put(
+        &app,
+        &ctx,
+        "app",
+        "auth",
+        Variant::Human,
+        "# New\n",
+        Expect::Absent,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        app.undelete_doc(&ctx, "app", first).await,
+        Err(AppError::AlreadyExists(_))
+    ));
+    app.delete_doc(&ctx, "app", &path("auth")).await.unwrap();
+    assert_eq!(app.deleted_docs(&ctx, "app").await.unwrap().len(), 2);
+
+    let cursor = app.changes(&ctx, "app", None).await.unwrap().cursor;
+    let d = app.undelete_doc(&ctx, "app", first).await.unwrap();
+    assert_eq!(d.id, first);
+    assert_eq!(head(&app, &ctx, "auth", Variant::Human).await, h);
+    let s = app.doc_sync(&ctx, "app", &path("auth")).await.unwrap();
+    assert!(s.sections.iter().all(|s| s.state == SyncState::InSync));
+    assert_eq!(app.deleted_docs(&ctx, "app").await.unwrap().len(), 1);
+    assert!(matches!(
+        app.undelete_doc(&ctx, "app", first).await,
+        Err(AppError::NotFound)
+    ));
+
+    // History continues from the last head.
+    let next = put(
+        &app,
+        &ctx,
+        "app",
+        "auth",
+        Variant::Ai,
+        "# Auth\n\n- tokens: opaque, 32 bytes\n",
+        Expect::Any,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(next.revision.parent_id, Some(last.revision.id));
+
+    let c = changes_until(&app, &ctx, "app", &cursor, |c| c.documents.iter().any(|d| d.restored)).await;
+    // Concurrent tests can hold the cursor back far enough to include earlier
+    // writes and the second document's deletion; check only the live entry.
+    let live: Vec<_> = c.documents.iter().filter(|d| !d.deleted).collect();
+    assert_eq!(live.len(), 1);
+    assert!(live[0].restored);
+    assert!(live[0].variants.iter().any(|v| v.variant == Variant::Ai));
+
+    // Deleted and restored within one window: reported as restored only.
+    let cursor = c.cursor;
+    app.delete_doc(&ctx, "app", &path("auth")).await.unwrap();
+    app.undelete_doc(&ctx, "app", first).await.unwrap();
+    let c = changes_until(&app, &ctx, "app", &cursor, |c| c.documents.iter().any(|d| d.restored)).await;
+    assert!(c.documents.iter().all(|d| d.restored && !d.deleted));
+}

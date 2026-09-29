@@ -11,7 +11,14 @@ use topcoat::view::{View, view};
 use crate::WebConfig;
 use crate::auth::{app, tenant_ctx};
 use crate::error::OrHttp;
+use crate::pages::deleted::undelete_button;
 use crate::ui::{Trusted, doc_url, fmt_time, project_url, tenant_url};
+
+#[query_params]
+struct ProjectQuery {
+    /// Id of a document just deleted.
+    deleted: Option<String>,
+}
 
 #[page("/t/{tenant}/p/{project}")]
 async fn project_home(cx: &Cx) -> Result<impl View> {
@@ -23,6 +30,14 @@ async fn project_home(cx: &Cx) -> Result<impl View> {
     let for_people = queue.iter().filter(|e| e.state.needs_person()).count();
     let (t, p) = (ctx.tenant.slug.clone(), tree.project.slug.clone());
     let ancestors: Vec<String> = chain.iter().skip(1).map(|x| x.slug.clone()).collect();
+    // After a delete (see `pages::doc::delete`): offer to undo it.
+    let deleted = match query_params::<ProjectQuery>(cx)
+        .ok()
+        .and_then(|q| q.deleted.as_deref()?.parse().ok())
+    {
+        Some(id) => app.deleted_doc(&ctx, &p, id).await.ok().map(|d| d.document),
+        None => None,
+    };
 
     Ok(view! {
         <nav class="crumbs">
@@ -37,8 +52,18 @@ async fn project_home(cx: &Cx) -> Result<impl View> {
                     "Sync queue " <span class=(if for_people > 0 { "count warn" } else { "count" })>(for_people)</span>
                 </a>
                 <a class="button secondary" href=(format!("{}/llms.txt", project_url(&t, &p)))>"llms.txt"</a>
+                <a class="button secondary" href=(format!("{}/deleted", project_url(&t, &p)))>"Deleted"</a>
             </div>
         </div>
+        match deleted {
+            Some(d) => {
+                <div class="notice">
+                    "Deleted " <code>(d.path.clone())</code> ". "
+                    undelete_button(tenant: t.clone(), project: p.clone(), id: d.id, label: "Undo")
+                </div>
+            },
+            None => "",
+        }
         if !ancestors.is_empty() {
             <p class="muted">"Inherits from " (ancestors.join(" → "))</p>
         }

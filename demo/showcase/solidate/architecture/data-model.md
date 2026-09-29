@@ -18,9 +18,10 @@ as hashes.
 
 A `project` belongs to a tenant, has a slug unique within it, an optional parent
 project and a JSON `settings` object. A `document` belongs to a project and is
-identified by its path. Deleting a document marks it deleted rather than removing
-its rows, and path uniqueness applies only to live documents, so a path can be
-reused.
+identified by its path. Deleting a document marks it deleted, with who deleted it,
+rather than removing its rows, and path uniqueness applies only to live
+documents, so a path can be reused. Undeleting clears the mark and records when
+(`restored_at`, `restored_xid`); see [[guide/variants-and-sync#undelete]].
 
 ## Revisions and heads {#revisions}
 

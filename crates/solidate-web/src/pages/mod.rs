@@ -1,3 +1,4 @@
+mod deleted;
 mod doc;
 mod home;
 mod oidc;

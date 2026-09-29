@@ -119,6 +119,15 @@ reconciliation, not only the current one. A sync item whose other side went
 back to an earlier version includes the stale side's matching earlier text, so
 an agent can write it back without translating again.
 
+### Restoring a deleted document {#undelete}
+
+Deleting a document keeps its history. The project's **Deleted** page lists
+deleted documents with who deleted them and when; each can be opened read-only
+and restored. Right after a delete, the project page offers to undo it.
+Restoring brings back both variants, their history and their sync state as they
+were. If another document now holds the path, delete that one first. The change
+feed reports the document as restored.
+
 ## Turning sync off {#disable}
 
 Some documents, like a changelog, only make sense in one variant. Sync can be

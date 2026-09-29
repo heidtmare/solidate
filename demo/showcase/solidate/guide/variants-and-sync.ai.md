@@ -1,6 +1,6 @@
 # Variants and sync
 
-Covers: pairing, sync states, single-variant documents, diagrams, clearing, restoring, disabling.
+Covers: pairing, sync states, single-variant documents, diagrams, clearing, restoring, undeleting, disabling.
 
 ## How pairing works {#pairing}
 
@@ -70,6 +70,15 @@ Covers: pairing, sync states, single-variant documents, diagrams, clearing, rest
 - base restoration: after both writes, affected section whose current `(human, ai)` hashes were ever recorded as a base -> that base recorded again (`reconciled`). Covers reverting a bad write that was marked in sync with `resolves`.
 - source of pairings: `sync_base_log` (append-only; see [[architecture/data-model#sync]]).
 - `SyncItem.paired`: stale side's text last recorded in sync with the other side's current text; present after the other side went back to an earlier version. Write it back instead of retranslating.
+
+### Restoring a deleted document {#undelete}
+
+- delete = soft delete; revisions, heads, `sync_bases`, proposals kept. `deleted_by_user` | `deleted_by_token` recorded.
+- entry points: web project "Deleted" page (list, read-only view, "Restore"); "Undo" notice after a delete | `GET /api/v1/projects/{p}/deleted`, `GET .../deleted/{id}`, `POST .../deleted/{id}/restore`. Owning project only; `write` scope. No MCP tool (MCP cannot delete either).
+- undelete by document id: a path can have several deleted documents.
+- live document at the path -> `already_exists` (409); no restore under another path.
+- result: document live with its last heads and sync state; next write's parent = last head. Audit `doc.undelete` `{document, deleted_at}`; `doc.delete` detail carries `document`.
+- change feed: `restored: true`; deleted and restored in one window -> `restored` only, `deleted: false`. `variants` covers only revisions in the window; read the document.
 
 ## Turning sync off {#disable}
 

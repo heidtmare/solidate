@@ -37,6 +37,9 @@ pub struct DocChange {
     pub created: bool,
     /// The document was deleted in the window; `variants` is empty.
     pub deleted: bool,
+    /// The document was restored from deletion in the window. `variants` covers
+    /// only revisions written in the window; read the document for its content.
+    pub restored: bool,
     pub variants: Vec<VariantChange>,
 }
 
@@ -177,6 +180,7 @@ impl App {
                 inherited: depth > 0,
                 created: d.created,
                 deleted: d.deleted,
+                restored: d.restored,
                 variants,
             });
         }

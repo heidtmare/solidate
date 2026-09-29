@@ -49,6 +49,9 @@ curl -H "Authorization: Bearer $SOLIDATE_TOKEN" http://localhost:3000/api/v1
 | GET | `/projects/{p}/history/{path}` | `variant`; newest first |
 | GET | `/projects/{p}/revisions/{rev}/{path}` | content + diff from parent |
 | POST | `/projects/{p}/restore/{path}` | JSON `{revision, companion?` (true)`, message?, dry_run?}`; `If-Match` on head of the revision's variant, required unless `dry_run` |
+| GET | `/projects/{p}/deleted` | owned deleted docs, newest deletion first |
+| GET | `/projects/{p}/deleted/{id}` | one deleted doc + `human`, `ai` content (null if never written) |
+| POST | `/projects/{p}/deleted/{id}/restore` | undelete; `write`; 409 `already_exists` if path live; 404 if not deleted or not owned |
 | GET | `/projects/{p}/backlinks/{path}` | |
 
 ```sh
@@ -60,6 +63,7 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 
 - PUT response: `{path, variant, content_hash, revision, changed, sync: [{anchor, state}], followed_ai_hash?}`; `followed_ai_hash` = new AI `content_hash` when diagram edits were carried over ([[guide/variants-and-sync#diagrams]]).
 - restore response: `{path, variant, restored_from, revision, content_hash, changed, dry_run, diff, companion: {variant, revision, content_hash, anchors, diff} | null, skipped, reconciled, sync}`; `ETag` unless `dry_run`. Semantics: [[guide/variants-and-sync#restore]].
+- deleted entry: `{id, path, title, deleted_at, deleted_by: user|token|system, deleted_by_name, human_hash, ai_hash}`; undelete response `{id, path, title}`. Semantics: [[guide/variants-and-sync#undelete]].
 - history entries: `{id, variant, content_hash, author, message, restored_from?, created_at}`.
 - PATCH targets: `anchor` -> replace (empty `content` deletes); `after` -> insert after section + subsections; neither -> append.
 - PATCH precondition: `section_hash` (the `hash` from `GET ?section=`, same `subsections`, no `expand`) -> 412 only if that span changed; or `If-Match` (whole variant). Replace without either -> 428; inserts need none.
@@ -80,9 +84,9 @@ curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstar
 
 ## Change feed {#changes}
 
-- `GET /projects/{p}/changes?since=<cursor|RFC 3339>` -> `{cursor, documents: [{path, title, owner, inherited, created, deleted, variants: [{variant, revisions, content_hash, added, changed, removed, authors: [{kind, name}], messages, restored_from, updated_at}]}]}`; ordered by path; `restored_from`: revisions restored in the window.
+- `GET /projects/{p}/changes?since=<cursor|RFC 3339>` -> `{cursor, documents: [{path, title, owner, inherited, created, deleted, restored, variants: [{variant, revisions, content_hash, added, changed, removed, authors: [{kind, name}], messages, restored_from, updated_at}]}]}`; ordered by path; `restored_from`: revisions restored in the window.
 - no `since` -> `{cursor, documents: []}`. Invalid `since` -> 400.
-- covers own + inherited docs; override written in window -> `created`, inherited entry omitted. `deleted` -> `variants: []`.
+- covers own + inherited docs; override written in window -> `created`, inherited entry omitted. `deleted` -> `variants: []`. `restored`: undeleted in window (and not deleted since); `variants` = revisions in window only.
 - anchors: semantic-hash diff of revision before window vs last in window; formatting-only -> empty lists.
 - cursor = `pg_snapshot_xmin` bound: no change skipped on late commit; long-running transactions delay visibility. Next call: pass response `cursor`.
 

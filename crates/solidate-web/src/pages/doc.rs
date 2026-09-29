@@ -1,4 +1,5 @@
 //! Document view, editor, creation, history, restores, deletion, and Markdown preview.
+//! Undeletes are in [`super::deleted`].
 
 use serde::Deserialize;
 use solidate_app::core::{DocPath, Hash, SyncState, Variant, render_html};
@@ -36,6 +37,8 @@ struct VariantQuery {
     restored: Option<String>,
     paired: Option<String>,
     unpaired: Option<String>,
+    /// After an undelete.
+    undeleted: Option<String>,
 }
 
 fn variant(cx: &Cx) -> Variant {
@@ -114,6 +117,7 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
         q.as_ref().and_then(|q| q.unpaired.as_deref()),
         &sync_url,
     );
+    let undeleted = q.as_ref().is_some_and(|q| q.undeleted.is_some());
     let drift_titles: Vec<(String, String)> = drifted
         .iter()
         .map(|a| {
@@ -139,6 +143,9 @@ async fn doc_view(cx: &Cx) -> Result<impl View> {
             </div>
         </div>
         (restored)
+        if undeleted {
+            <p class="notice ok">"Restored this document from deletion, with its history and sync state."</p>
+        }
         (notices)
         <div class="tabs">
             <a href=(doc_url(&t, &p, &ps, Variant::Human)) class=(if v == Variant::Human { "tab active" } else { "tab" })>"Human"</a>
@@ -473,8 +480,12 @@ async fn new_doc_submit(cx: &Cx, Form(form): Form<EditForm>) -> Result<SeeOther>
 async fn delete(cx: &Cx) -> Result<SeeOther> {
     let ctx = tenant_ctx(cx, path_param_segment(cx, "tenant")).await?;
     let (project, path) = (path_param_segment(cx, "project"), doc_path(cx)?);
-    app(cx).delete_doc(&ctx, project, &path).await.or_http()?;
-    Ok(see_other(project_url(&ctx.tenant.slug, project)))
+    let d = app(cx).delete_doc(&ctx, project, &path).await.or_http()?;
+    Ok(see_other(format!(
+        "{}?deleted={}",
+        project_url(&ctx.tenant.slug, project),
+        d.id
+    )))
 }
 
 #[page("/t/{tenant}/p/{project}/history/{*path}")]

@@ -1,4 +1,4 @@
-//! Document reads and writes, history, revisions, restores, and backlinks.
+//! Document reads and writes, history, revisions, restores, undeletes, and backlinks.
 
 use serde::{Deserialize, Serialize};
 use solidate_app::core::edit::span_hash;
@@ -412,6 +412,110 @@ async fn delete_inner(cx: &Cx) -> ApiResult {
     let mut res = Response::new(Body::empty());
     *res.status_mut() = StatusCode::NO_CONTENT;
     Ok(res)
+}
+
+#[derive(Serialize)]
+struct DeletedOut<'a> {
+    /// Document id; pass to the restore route.
+    id: String,
+    path: &'a str,
+    title: Option<&'a str>,
+    #[serde(with = "time::serde::rfc3339")]
+    deleted_at: OffsetDateTime,
+    /// `user`, `token`, or `system`.
+    deleted_by: &'a str,
+    /// User or token name.
+    deleted_by_name: Option<&'a str>,
+    /// Content hash of each variant's last head.
+    human_hash: Option<Hash>,
+    ai_hash: Option<Hash>,
+}
+
+fn deleted_out(d: &solidate_app::db::DeletedDocument) -> DeletedOut<'_> {
+    DeletedOut {
+        id: d.id.to_string(),
+        path: &d.path,
+        title: d.title.as_deref(),
+        deleted_at: d.deleted_at,
+        deleted_by: &d.deleted_by_kind,
+        deleted_by_name: d.deleted_by_name.as_deref(),
+        human_hash: d.human_hash,
+        ai_hash: d.ai_hash,
+    }
+}
+
+fn document_id(cx: &Cx) -> Result<solidate_app::db::DocumentId, ApiError> {
+    path_param_segment(cx, "id")
+        .parse()
+        .map_err(|_| ApiError::from(AppError::NotFound))
+}
+
+/// Deleted documents owned by the project, newest deletion first.
+#[route(GET "/api/v1/projects/{project}/deleted")]
+async fn api_deleted(cx: &Cx) -> Result<Response> {
+    finish(deleted_inner(cx).await)
+}
+
+async fn deleted_inner(cx: &Cx) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let docs = app(cx).deleted_docs(&ctx, path_param_segment(cx, "project")).await?;
+    Ok(json(StatusCode::OK, &docs.iter().map(deleted_out).collect::<Vec<_>>()))
+}
+
+/// One deleted document with the last content of each variant.
+#[route(GET "/api/v1/projects/{project}/deleted/{id}")]
+async fn api_deleted_doc(cx: &Cx) -> Result<Response> {
+    finish(deleted_doc_inner(cx).await)
+}
+
+async fn deleted_doc_inner(cx: &Cx) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let v = app(cx)
+        .deleted_doc(&ctx, path_param_segment(cx, "project"), document_id(cx)?)
+        .await?;
+    #[derive(Serialize)]
+    struct Out<'a> {
+        #[serde(flatten)]
+        document: DeletedOut<'a>,
+        human: Option<&'a str>,
+        ai: Option<&'a str>,
+    }
+    Ok(json(
+        StatusCode::OK,
+        &Out {
+            document: deleted_out(&v.document),
+            human: v.human.as_ref().map(|h| h.content.as_str()),
+            ai: v.ai.as_ref().map(|h| h.content.as_str()),
+        },
+    ))
+}
+
+/// Makes a deleted document live again at its path. `409 already_exists` when a
+/// live document holds the path.
+#[route(POST "/api/v1/projects/{project}/deleted/{id}/restore")]
+async fn api_undelete(cx: &Cx) -> Result<Response> {
+    finish(undelete_inner(cx).await)
+}
+
+async fn undelete_inner(cx: &Cx) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let d = app(cx)
+        .undelete_doc(&ctx, path_param_segment(cx, "project"), document_id(cx)?)
+        .await?;
+    #[derive(Serialize)]
+    struct Out<'a> {
+        id: String,
+        path: &'a str,
+        title: Option<&'a str>,
+    }
+    Ok(json(
+        StatusCode::OK,
+        &Out {
+            id: d.id.to_string(),
+            path: &d.path,
+            title: d.title.as_deref(),
+        },
+    ))
 }
 
 #[query_params]

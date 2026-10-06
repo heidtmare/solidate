@@ -28,6 +28,7 @@ Base URL `http://localhost:3000/t/heidtmare/p/solidate`.
 | Readme | `/d/readme` | rendering, outline, include from `handbook:glossary`, Includes panel |
 | Readme, AI tab | `/d/readme?v=ai` | the same facts as dense reference |
 | Inherited page | `/d/glossary` | "Inherited from handbook" notice, Override button |
+| Link graph | `/graph` | links and includes between all documents, unlinked documents |
 | Backlinks | `/d/architecture/hashing` | "Linked from" panel, conflict dot in outline |
 | Sync queue | `/sync` | all four states plus the pending proposal |
 | Conflict item | `/sync/architecture/hashing` | both sides, base text, diffs |
@@ -43,9 +44,10 @@ shrink. Re-run `./seed.sh` to reset.
 
 ## Recording
 
-`recording/record.js` drives Chromium through the suggested recording and
-writes a WebM with captions and a visible cursor: sign-in, project home, readme
-in both variants, the sync queue, conflict details, accepting the staged agent
+`recording/record.js` drives Chromium in dark mode through the suggested
+recording and writes a WebM with captions and a visible cursor: sign-in, project
+home, readme in both variants, the link graph (hover highlights a node's edges)
+and its REST/MCP form, the sync queue, conflict details, accepting the staged agent
 proposal, translating `diagrams` by hand, a human readme edit that an agent then
 translates over REST, an agent proposal in the AI-to-human direction, history,
 search and `llms.txt`. It changes state, so run `./seed.sh` first.

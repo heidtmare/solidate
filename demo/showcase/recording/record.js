@@ -1,4 +1,4 @@
-// Records a walkthrough of the showcase project. Env: SOLIDATE_TOKEN (agent token), PW (demo user password).
+// Records a walkthrough of the showcase project in dark mode. Env: SOLIDATE_TOKEN (agent token), PW (demo user password).
 const { chromium } = require('playwright');
 
 const BASE = 'http://localhost:3000';
@@ -7,22 +7,26 @@ const API = BASE + '/api/v1/projects/solidate';
 const TOKEN = process.env.SOLIDATE_TOKEN;
 const W = 1440, H = 900;
 
-// Overlay: fake cursor, click ripple, caption bar, code card. State survives navigation via sessionStorage.
+// Overlay: fake cursor, click ripple, caption bar, code card, link graph hover. State survives navigation via sessionStorage.
 const overlay = () => {
   const ss = (k, v) => { try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (_) {} };
   const css = `
     #__cur{position:fixed;z-index:2147483647;width:22px;height:22px;margin:-3px 0 0 -3px;pointer-events:none;
-      background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 2l7 19 2.6-7.4L20 11z' fill='%23111' stroke='white' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat;}
+      background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 2l7 19 2.6-7.4L20 11z' fill='%23fff' stroke='%23111' stroke-width='1.6' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat;}
     .__rip{position:fixed;z-index:2147483646;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;pointer-events:none;
-      background:rgba(37,99,235,.35);animation:__r .5s ease-out forwards}
+      background:rgba(124,156,245,.45);animation:__r .5s ease-out forwards}
     @keyframes __r{from{transform:scale(.3);opacity:1}to{transform:scale(1.6);opacity:0}}
     #__cap{position:fixed;z-index:2147483645;left:50%;bottom:28px;transform:translateX(-50%);max-width:1100px;
-      background:rgba(17,24,39,.92);color:#fff;font:500 21px/1.4 -apple-system,system-ui,sans-serif;padding:12px 22px;border-radius:10px;
-      box-shadow:0 6px 24px rgba(0,0,0,.25);text-align:center;transition:opacity .25s}
+      background:rgba(124,156,245,.95);color:#0d1117;font:600 21px/1.4 -apple-system,system-ui,sans-serif;padding:12px 22px;border-radius:10px;
+      box-shadow:0 6px 24px rgba(0,0,0,.4);text-align:center;transition:opacity .25s;pointer-events:none}
     #__cap:empty{opacity:0}
     #__card{position:fixed;z-index:2147483644;right:28px;top:70px;width:620px;background:#0f172a;color:#e2e8f0;border-radius:10px;
-      font:13.5px/1.5 ui-monospace,Menlo,monospace;padding:14px 18px;white-space:pre-wrap;box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    #__card b{color:#93c5fd;font-weight:600}`;
+      font:13.5px/1.5 ui-monospace,Menlo,monospace;padding:14px 18px;white-space:pre-wrap;box-shadow:0 10px 30px rgba(0,0,0,.5);border:1px solid #334155}
+    #__card b{color:#93c5fd;font-weight:600}
+    #__tip{position:fixed;z-index:2147483643;pointer-events:none;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:8px;
+      font:500 14px/1.45 -apple-system,system-ui,sans-serif;padding:7px 12px;white-space:pre;box-shadow:0 6px 20px rgba(0,0,0,.45)}
+    .link-graph .e.__hl{stroke-opacity:1;stroke-width:2.6}
+    .link-graph g.__hl circle{stroke:#fbbf24;stroke-width:3}`;
   const init = () => {
     if (document.getElementById('__cur')) return;
     const st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
@@ -42,6 +46,22 @@ const overlay = () => {
   addEventListener('mousemove', e => {
     ss('__pos', e.clientX + ',' + e.clientY);
     const c = document.getElementById('__cur'); if (c) { c.style.left = e.clientX + 'px'; c.style.top = e.clientY + 'px'; }
+  }, true);
+  addEventListener('mouseover', e => {
+    const g = e.target.closest && e.target.closest('.link-graph .nodes g');
+    document.querySelectorAll('.link-graph .__hl').forEach(x => x.classList.remove('__hl'));
+    let tip = document.getElementById('__tip');
+    if (!g) { if (tip) tip.remove(); return; }
+    const id = g.querySelector('text').textContent;
+    g.classList.add('__hl');
+    document.querySelectorAll('.link-graph .e').forEach(l => {
+      const [a, b] = l.querySelector('title').textContent.split(/ links to | includes /);
+      if (a === id || b.split(' #')[0] === id) l.classList.add('__hl');
+    });
+    if (!tip) { tip = document.createElement('div'); tip.id = '__tip'; document.body.appendChild(tip); }
+    tip.textContent = g.querySelector('title').textContent;
+    const r = g.querySelector('circle').getBoundingClientRect();
+    tip.style.left = (r.right + 14) + 'px'; tip.style.top = (r.bottom + 10) + 'px';
   }, true);
   addEventListener('mousedown', e => {
     const r = document.createElement('div'); r.className = '__rip'; r.style.left = e.clientX + 'px'; r.style.top = e.clientY + 'px';
@@ -74,7 +94,7 @@ async function propose(path, variant, from, to, message, resolves) {
 (async () => {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({
-    viewport: { width: W, height: H }, deviceScaleFactor: 1,
+    viewport: { width: W, height: H }, deviceScaleFactor: 1, colorScheme: 'dark',
     recordVideo: { dir: 'video', size: { width: W, height: H } },
   });
   await ctx.addInitScript(overlay);
@@ -150,7 +170,38 @@ async function propose(path, variant, from, to, message, resolves) {
   await click(page.locator('a', { hasText: /^AI$/ }).first(), 1800);
   await scroll(700); await sleep(1200); await scrollTop();
 
-  // 4. Sync queue
+  // 4. Link graph
+  await go(P);
+  await cap('Links and includes add up to a graph of the whole project', 400);
+  await click(page.getByRole('link', { name: 'Link graph' }), 1600);
+  await cap('Own documents, inherited ones, other projects and missing targets; dashed edges are includes', 3000);
+  const node = id => page.locator('.link-graph .nodes g').filter({ has: page.locator('text', { hasText: new RegExp(`^${id.replace(/[/.]/g, '\\$&')}$`) }) }).first().locator('circle');
+  await cap('Hover a document to trace its links', 300);
+  await point(node('readme'), 2600);
+  await point(node('glossary'), 2400);
+  await point(node('architecture/hashing'), 2400);
+  const lists = page.locator('h2', { hasText: /Missing targets|Not linked from any document/ });
+  if (await lists.count()) {
+    await move(W - 120, H / 2, 15);
+    await scrollToEl('.graph', 'end');
+    await cap('Below: broken link targets, and documents nothing links to', 3000);
+    await scrollTop();
+  }
+  await card(
+    '<b>GET</b>  /api/v1/projects/solidate/graph            JSON, ETag = Merkle root\n' +
+    '<b>GET</b>  /api/v1/projects/solidate/graph?format=svg\n' +
+    '<b>MCP</b>  link_graph {"project":"solidate"}\n\n' +
+    '{"nodes":[…, {"id":"readme","kind":"document","inbound":0,"outbound":12}, …],\n' +
+    ' "edges":[…, {"source":17,"target":10,"kind":"include","anchors":["core-terms"]}, …]}');
+  await cap('The same graph is served as JSON over REST and MCP', 3600);
+  await card(null);
+  await cap('Every node links to its document', 300);
+  await click(node('architecture/hashing'), 1400);
+  await scrollToEl('aside', 'start').catch(() => {});
+  await point(page.locator('aside').getByText('Linked from'), 2200);
+  await scrollTop();
+
+  // 5. Sync queue
   await cap('Sections are paired by anchor and hashed; the sync queue lists every section that drifted', 600);
   await go(P + '/sync');
   await sleep(2600);
@@ -158,14 +209,14 @@ async function propose(path, variant, from, to, message, resolves) {
   await point(page.locator('span.state', { hasText: 'AI changed' }).first(), 700);
   await point(page.locator('span.state', { hasText: 'both changed' }).first(), 1200);
 
-  // 5. Conflict details
+  // 6. Conflict details
   await cap('A conflict: both variants changed the same section since the last sync', 400);
   await click(page.locator('td a', { hasText: 'architecture/hashing' }));
   await click(page.locator('tr', { hasText: '#semantic' }).getByRole('button', { name: 'Details' }), 1000);
   await scrollToEl('.sync-item', 'center');
   await cap('Each side shows its diff since the last sync; the base text is one click away', 3000);
 
-  // 6. Accept an agent's proposal
+  // 7. Accept an agent's proposal
   await go(P + '/sync');
   await cap('An agent translated the quickstart change and submitted a proposal', 600);
   await click(page.locator('td a', { hasText: 'guide/quickstart' }));
@@ -177,7 +228,7 @@ async function propose(path, variant, from, to, message, resolves) {
   await click(page.getByRole('button', { name: 'Accept' }), 1400);
   await cap('Accepted: the AI variant is updated and the section is back in sync', 2400);
 
-  // 7. Human translates by hand
+  // 8. Human translates by hand
   await go(P + '/sync');
   await cap('A person can also translate by hand. The Diagrams section exists only in the human variant', 800);
   await click(page.locator('td a', { hasText: 'guide/writing-documents' }));
@@ -197,7 +248,7 @@ async function propose(path, variant, from, to, message, resolves) {
   await click(page.getByRole('button', { name: 'Save' }), 1200);
   await cap('Saving marks #diagrams in sync', 2400);
 
-  // 8. Human edit, then an agent translates it
+  // 9. Human edit, then an agent translates it
   await go(P + '/d/readme');
   await cap('Now a person edits the human readme', 600);
   await click(page.getByRole('link', { name: 'Edit', exact: true }), 900);
@@ -251,11 +302,11 @@ async function propose(path, variant, from, to, message, resolves) {
   await go(P + '/sync');
   await cap('The queue is down to the one conflict, which needs a person to reconcile', 3000);
 
-  // 9. History
+  // 10. History
   await go(P + '/history/readme');
   await cap('History records every revision, by person or agent, with its change note', 3200);
 
-  // 10. Search and llms.txt
+  // 11. Search and llms.txt
   await go(P);
   await cap('Full-text search across both variants', 300);
   await click(page.locator('input[type=search], input[name=q]').first(), 200);

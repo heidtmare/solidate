@@ -425,6 +425,21 @@ impl TenantTx {
         .await?)
     }
 
+    /// Head content of every variant of the live documents of `project`.
+    pub async fn head_contents(&mut self, project: ProjectId) -> Result<Vec<HeadContent>> {
+        Ok(sqlx::query_as(
+            "SELECT d.path, h.variant, b.content
+             FROM documents d
+             JOIN heads h ON h.tenant_id = d.tenant_id AND h.document_id = d.id
+             JOIN blobs b ON b.tenant_id = h.tenant_id AND b.hash = h.content_hash
+             WHERE d.project_id = $1 AND d.deleted_at IS NULL
+             ORDER BY d.path, h.variant",
+        )
+        .bind(project)
+        .fetch_all(self.conn())
+        .await?)
+    }
+
     /// Live documents linking to `path` in `project`, from either variant.
     pub async fn backlinks(&mut self, project: &Project, path: &DocPath) -> Result<Vec<Backlink>> {
         Ok(sqlx::query_as(

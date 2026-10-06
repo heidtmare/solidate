@@ -43,6 +43,7 @@ translation workflow, so the agent does not need a custom prompt. The
 | `write_doc` | Write a variant; `base_hash` required except on create. Returns `followed_ai_hash` when a diagram edit was carried into the AI variant |
 | `write_section` | Replace, delete or insert one section without resending the rest |
 | `backlinks` | Documents linking to a document |
+| `link_graph` | Links and includes between all of a project's documents, with broken targets |
 | `doc_history` | Revisions of a variant, with restores marked |
 | `restore_revision` | Restore an earlier revision, with its counterpart where possible |
 | `get_sync_queue` | Sections awaiting translation |

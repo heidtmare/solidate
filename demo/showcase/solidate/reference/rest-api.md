@@ -49,6 +49,7 @@ decision flow.
 | `GET /projects/{p}/deleted/{id}` | One deleted document with the last content of each variant |
 | `POST /projects/{p}/deleted/{id}/restore` | Restore a deleted document; see [[guide/variants-and-sync#undelete]] |
 | `GET /projects/{p}/backlinks/{path}` | Documents linking here |
+| `GET /projects/{p}/graph` | Links and includes between all effective documents (`?format=svg` for a drawing) |
 
 A write takes either raw Markdown (`Content-Type: text/markdown`, with `message`
 and `resolves` as query parameters) or JSON `{content, message, resolves}`:

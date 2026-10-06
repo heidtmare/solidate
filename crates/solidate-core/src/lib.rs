@@ -4,6 +4,7 @@ pub mod auth;
 pub mod diagram;
 pub mod diff;
 pub mod edit;
+pub mod graph;
 pub mod hash;
 pub mod include;
 pub mod inherit;

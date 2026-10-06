@@ -186,6 +186,14 @@ pub struct SourceVerification {
     pub verified_at: OffsetDateTime,
 }
 
+/// Current content of one variant of a document.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct HeadContent {
+    pub path: String,
+    pub variant: Variant,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, sqlx::FromRow)]
 pub struct Backlink {
     pub document_id: DocumentId,

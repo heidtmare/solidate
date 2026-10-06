@@ -566,3 +566,50 @@ async fn oidc_routes(pool: PgPoolOptions, opts: PgConnectOptions) {
     let r = c.get("/login/oidc/callback?error=access_denied&state=x").await;
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn link_graph_page(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (app, mut c) = setup(pool, opts).await;
+    let sys = app.system_ctx("acme").await.unwrap();
+    app.put_doc(
+        &sys,
+        PutDoc {
+            project: "app",
+            path: &DocPath::parse("readme").unwrap(),
+            variant: Variant::Human,
+            content: "# Readme\n\n[[design/auth]] [[design/missing]]\n",
+            expect: Expect::Absent,
+            message: None,
+            resolves: &[],
+        },
+    )
+    .await
+    .unwrap();
+    c.post(
+        "/login",
+        &[("email", "ada@acme.dev"), ("password", "long-enough-pw"), ("next", "/")],
+    )
+    .await;
+
+    let r = c.get("/t/acme/p/app").await;
+    assert!(r.body.contains(r#"href="/t/acme/p/app/graph""#));
+    let r = c.get("/t/acme/p/app/graph").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.contains("2 documents, 2 links, 0 includes."), "{}", r.body);
+    assert!(
+        r.body
+            .contains(r#"<svg xmlns="http://www.w3.org/2000/svg" class="link-graph""#)
+    );
+    assert!(r.body.contains(r#"<a href="/t/acme/p/app/d/design/auth">"#));
+    // Missing targets are listed with their referrers; `readme` has no inbound links.
+    assert!(r.body.contains("<code>design/missing</code>"));
+    assert!(r.body.contains(" linked from readme"));
+    assert!(
+        r.body
+            .contains(r#"<a href="/t/acme/p/app/d/readme"><code>readme</code></a>"#)
+    );
+
+    let r = c.get("/t/acme/p/app/graph.svg").await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.starts_with("<svg"));
+}

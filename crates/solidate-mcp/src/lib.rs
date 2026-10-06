@@ -52,7 +52,8 @@ identical copy in the AI variant automatically (write responses then return foll
 variant's new content_hash). Adding or removing a diagram is a change to translate. Diagrams whose contents \
 differ between variants are listed in diagram_drift of the document sync status; a person chooses which version to \
 keep, so do not rewrite one variant's diagram to match the other.\n\n\
-Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content.\n\n\
+Projects inherit documents from parent projects; {{include project:path#anchor}} transcludes content. \
+link_graph returns the links and includes between a project's documents, including broken targets.\n\n\
 Sections can declare the repository files they describe with an HTML comment on its own lines, \
 `<!-- sources: path/file.rs, dir/, src/**/*.sql -->` (paths relative to the repository root). Before changing code, \
 call context_for_paths with the files you will touch to read the sections that describe them. After changing code, \
@@ -820,6 +821,18 @@ impl SolidateMcp {
             .map(|l| json!({ "project": l.project_slug, "path": l.path, "variant": l.variant, "anchor": l.target_anchor }))
             .collect();
         ok(json!(out))
+    }
+
+    #[tool(
+        description = "Links and includes between a project's effective documents, from both variants. `edges` reference `nodes` by index; node `kind` is document, inherited, missing (target path with no document) or external (another project, not checked). `inbound` 0 marks documents nothing links to. `root_hash` changes whenever the graph can."
+    )]
+    async fn link_graph(&self, Parameters(a): Parameters<ProjectArg>, ext: Extensions) -> ToolResult {
+        let ctx = try_app!(self.ctx(&ext).await);
+        let g = try_app!(self.app.link_graph(&ctx, &a.project).await);
+        ok(json!({
+            "project": g.project.slug, "root_hash": g.root_hash,
+            "nodes": g.graph.nodes, "edges": g.graph.edges,
+        }))
     }
 
     #[tool(description = "Revisions of one document variant, newest first.")]

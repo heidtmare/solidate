@@ -51,6 +51,7 @@ async fn project_home(cx: &Cx) -> Result<impl View> {
                 <a class="button secondary" href=(format!("{}/sync", project_url(&t, &p)))>
                     "Sync queue " <span class=(if for_people > 0 { "count warn" } else { "count" })>(for_people)</span>
                 </a>
+                <a class="button secondary" href=(format!("{}/graph", project_url(&t, &p)))>"Link graph"</a>
                 <a class="button secondary" href=(format!("{}/llms.txt", project_url(&t, &p)))>"llms.txt"</a>
                 <a class="button secondary" href=(format!("{}/deleted", project_url(&t, &p)))>"Deleted"</a>
             </div>

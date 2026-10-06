@@ -1671,3 +1671,79 @@ async fn undeletes(pool: PgPoolOptions, opts: PgConnectOptions) {
     let c = changes_until(&app, &ctx, "app", &cursor, |c| c.documents.iter().any(|d| d.restored)).await;
     assert!(c.documents.iter().all(|d| d.restored && !d.deleted));
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn link_graph_spans_variants_and_inheritance(pool: PgPoolOptions, opts: PgConnectOptions) {
+    use solidate_app::core::graph::{EdgeKind, NodeKind};
+
+    let (app, ctx) = setup(pool, opts).await;
+    let docs = [
+        (
+            "shared",
+            "rules",
+            Variant::Human,
+            "# Rules\n\n## Tone\n\nSee [[guide]].\n",
+        ),
+        (
+            "app",
+            "guide",
+            Variant::Human,
+            "# Guide\n\n{{include shared:rules#tone}}\n",
+        ),
+        (
+            "app",
+            "guide",
+            Variant::Ai,
+            "# Guide\n\n[[design/auth#tokens]] [[gone]]\n",
+        ),
+        ("app", "design/auth", Variant::Human, "# Auth\n\n[guide](../guide.md)\n"),
+        ("app", "old", Variant::Human, "# Old\n\n[[guide]]\n"),
+    ];
+    for (project, p, variant, md) in docs {
+        put(&app, &ctx, project, p, variant, md, Expect::Absent, &[])
+            .await
+            .unwrap();
+    }
+    app.delete_doc(&ctx, "app", &path("old")).await.unwrap();
+
+    let g = app.link_graph(&ctx, "app").await.unwrap();
+    assert_eq!(g.root_hash, app.tree(&ctx, "app").await.unwrap().root_hash);
+    let nodes: Vec<_> = g.graph.nodes.iter().map(|n| (n.id.as_str(), n.kind)).collect();
+    assert_eq!(
+        nodes,
+        [
+            ("design/auth", NodeKind::Document),
+            ("gone", NodeKind::Missing),
+            ("guide", NodeKind::Document),
+            ("rules", NodeKind::Inherited),
+        ]
+    );
+    let edges: Vec<_> = g
+        .graph
+        .edges
+        .iter()
+        .map(|e| {
+            (
+                g.graph.nodes[e.source].id.as_str(),
+                g.graph.nodes[e.target].id.as_str(),
+                e.kind,
+                e.variants.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        edges,
+        [
+            ("design/auth", "guide", EdgeKind::Link, vec![Variant::Human]),
+            ("guide", "design/auth", EdgeKind::Link, vec![Variant::Ai]),
+            ("guide", "gone", EdgeKind::Link, vec![Variant::Ai]),
+            ("guide", "rules", EdgeKind::Include, vec![Variant::Human]),
+            ("rules", "guide", EdgeKind::Link, vec![Variant::Human]),
+        ]
+    );
+
+    // From the parent, `guide` is not a document.
+    let shared = app.link_graph(&ctx, "shared").await.unwrap();
+    assert_eq!(shared.graph.nodes[0].id, "guide");
+    assert_eq!(shared.graph.nodes[0].kind, NodeKind::Missing);
+}

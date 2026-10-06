@@ -33,6 +33,7 @@ claude mcp add --transport http solidate http://localhost:3000/mcp \
 | `write_doc` | `project`, `path`, `variant?`, `content`, `base_hash?`, `message?`, `resolves?` | `base_hash` required unless creating; inherited path -> override; `followed_ai_hash` set when diagram edits were carried into the AI variant |
 | `write_section` | `project`, `path`, `variant?`, `anchor?` \| `after?`, `subsections?`, `content`, `section_hash?`, `base_hash?`, `message?`, `resolves?` | `{content_hash, changed, anchors, sync_pending, followed_ai_hash}`; see [[#section-edits]] |
 | `backlinks` | `project`, `path` | |
+| `link_graph` | `project` | `{project, root_hash, nodes, edges}`; node `kind`: `document` \| `inherited` \| `missing` \| `external`; edges index `nodes`, `kind`: `link` \| `include` |
 | `doc_history` | `project`, `path`, `variant?`, `limit?` (20) | newest first; `restored_from` on restores |
 | `restore_revision` | `project`, `path`, `revision`, `base_hash`, `companion?` (true), `message?`, `dry_run?` | `{content_hash, changed, dry_run, diff, companion, skipped, reconciled, sync_pending}`; requires `write`; see [[guide/variants-and-sync#restore]] |
 | `get_sync_queue` | `project` | `stale_side` (`null` = conflict), `proposal` |

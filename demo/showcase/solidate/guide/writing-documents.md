@@ -42,6 +42,9 @@ Solidate understands two link forms and records both for backlinks.
   `[[architecture/hashing]]`, `[[handbook:glossary#core-terms]]`.
 
 Every document page lists the documents that link to it under **Linked from**.
+The project's **Link graph** page draws every document with its links and
+includes, and lists link targets that have no document and documents that
+nothing links to.
 
 ## Includes {#includes}
 

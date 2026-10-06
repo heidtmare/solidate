@@ -28,6 +28,7 @@ A Mermaid fence renders in the editor preview as it is typed. Errors show inline
 - **Agent translation with review.** Agents submit translations as proposals; a person accepts or rejects them.
 - **Project inheritance.** Child projects inherit documents (shared glossary, style rules, translation guide) and can override any of them.
 - **Transclusion and links.** `{{include project:doc#section}}` directives, `[[wiki links]]`, backlinks.
+- **Link graph.** A project-wide graph of links and includes between documents, drawn as SVG with missing targets and unlinked documents listed; also served as JSON over REST and MCP.
 - **Content hashing.** BLAKE3 content hashes as ETags and for optimistic concurrency, semantic hashes for sync, and a Merkle root per project.
 - **Doc↔code drift.** Sections declare the repository files they describe (`<!-- sources: path, dir/, **/*.sql -->`); clients report file hashes (git blob ids), and a drift queue lists sections whose files changed since they were last verified.
 - **APIs for tools.** REST API, MCP server (streamable HTTP and stdio), and an `llms.txt` index.

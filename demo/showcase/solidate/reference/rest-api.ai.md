@@ -53,6 +53,7 @@ curl -H "Authorization: Bearer $SOLIDATE_TOKEN" http://localhost:3000/api/v1
 | GET | `/projects/{p}/deleted/{id}` | one deleted doc + `human`, `ai` content (null if never written) |
 | POST | `/projects/{p}/deleted/{id}/restore` | undelete; `write`; 409 `already_exists` if path live; 404 if not deleted or not owned |
 | GET | `/projects/{p}/backlinks/{path}` | |
+| GET | `/projects/{p}/graph` | `format?` (`json` \| `svg`); `{project, root_hash, nodes, edges}`; ETag = root hash |
 
 ```sh
 curl -X PUT "http://localhost:3000/api/v1/projects/solidate/docs/guide/quickstart?variant=ai&resolves=start" \

@@ -200,3 +200,13 @@ pre.diff .hunk { color: var(--muted); }
 .dot.diagram { border-radius: 1px; background: var(--accent); }
 .drift { border-top: 1px solid var(--line); padding-top: 0.4rem; }
 .drift h4 { margin: 0 0 0.3rem; font-size: 0.9rem; }
+
+.graph { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--soft); margin: 0.5rem 0 1rem; }
+.graph svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+.graph-key { display: inline-flex; align-items: center; gap: 0.3rem; margin-right: 0.8rem; font-size: 0.85rem; }
+.graph-key::before { content: ""; width: 0.7rem; height: 0.7rem; border-radius: 50%; }
+.graph-key.document::before { background: var(--accent); }
+.graph-key.inherited::before { background: var(--muted); }
+.graph-key.missing::before { background: var(--del-fg); }
+.graph-key.external::before { border: 1px dashed var(--muted); }
+.graph-key.include::before { width: 1.2rem; height: 0; border-radius: 0; border-top: 2px dashed var(--accent); }

@@ -1154,3 +1154,53 @@ async fn undelete_over_api(pool: PgPoolOptions, opts: PgConnectOptions) {
         .json();
     assert_eq!(list.as_array().unwrap().len(), 1);
 }
+
+#[sqlx::test(migrator = "solidate_app::db::MIGRATOR")]
+async fn link_graph_json_and_svg(pool: PgPoolOptions, opts: PgConnectOptions) {
+    let (_app, router, rw, ro) = setup(pool, opts).await;
+    let api = Api {
+        router: router.clone(),
+        auth: rw,
+    };
+    for (path, body) in [("a", "# A\n\n[[b#x]]\n"), ("b", "# B <&>\n")] {
+        let r = api
+            .req(
+                "PUT",
+                &format!("/api/v1/projects/app/docs/{path}"),
+                &[("if-none-match", "*")],
+                Some(body),
+            )
+            .await;
+        assert!(r.status.is_success(), "{}", r.body);
+    }
+
+    let r = api.req("GET", "/api/v1/projects/app/graph", &[], None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let g = r.json();
+    assert_eq!(g["project"], "app");
+    assert_eq!(g["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(g["nodes"][1]["inbound"], 1);
+    assert_eq!(
+        g["edges"],
+        serde_json::json!([{ "source": 0, "target": 1, "kind": "link", "variants": ["human"], "anchors": ["x"] }])
+    );
+    let etag = r.etag.unwrap();
+    let tree = api.req("GET", "/api/v1/projects/app/tree", &[], None).await;
+    assert_eq!(tree.etag.as_deref(), Some(etag.as_str()));
+    let r = api
+        .req("GET", "/api/v1/projects/app/graph", &[("if-none-match", &etag)], None)
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_MODIFIED);
+
+    let r = api.req("GET", "/api/v1/projects/app/graph?format=svg", &[], None).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(r.body.starts_with("<svg"), "{}", r.body);
+    assert!(r.body.contains(r#"href="/t/acme/p/app/d/b""#));
+    assert!(r.body.contains("B &lt;&amp;&gt;"));
+    let r = api.req("GET", "/api/v1/projects/app/graph?format=png", &[], None).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+
+    let limited = Api { router, auth: ro };
+    let r = limited.req("GET", "/api/v1/projects/app/graph", &[], None).await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}

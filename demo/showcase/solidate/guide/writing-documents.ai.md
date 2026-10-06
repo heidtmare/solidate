@@ -25,6 +25,7 @@ Format: GitHub-flavored Markdown. Covers Solidate-specific semantics. Style rule
   - `[tokens](auth#tokens)` from `design/sessions` -> `design/auth#tokens`.
 - wiki link: project-rooted; `[[path#anchor]]`, `[[project:path#anchor]]`, `[[path|label]]`.
 - all internal links stored per head -> backlinks ("Linked from" panel).
+- project link graph (`/t/{t}/p/{p}/graph`, REST `graph`, MCP `link_graph`): nodes = effective docs + missing targets + other-project targets; edges = links + includes from both variants. Unqualified links resolve against the viewing project, unqualified includes against the owning project.
 
 ## Includes {#includes}
 

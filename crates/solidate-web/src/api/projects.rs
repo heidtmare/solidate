@@ -180,6 +180,56 @@ async fn root_hash_inner(cx: &Cx) -> ApiResult {
 }
 
 #[query_params]
+struct GraphQuery {
+    /// `svg` for an SVG rendering; JSON otherwise.
+    format: Option<String>,
+}
+
+/// Links and includes between the project's effective documents. ETag: the root hash.
+#[route(GET "/api/v1/projects/{project}/graph")]
+async fn api_graph(cx: &Cx) -> Result<Response> {
+    finish(graph_inner(cx).await)
+}
+
+async fn graph_inner(cx: &Cx) -> ApiResult {
+    let ctx = api_ctx(cx).await?;
+    let q = query_params::<GraphQuery>(cx).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let svg = match q.format.as_deref() {
+        None | Some("json") => false,
+        Some("svg") => true,
+        Some(other) => {
+            return Err(ApiError::bad_request(format!(
+                "unknown format {other:?}; expected json or svg"
+            )));
+        }
+    };
+    let g = app(cx).link_graph(&ctx, path_param_segment(cx, "project")).await?;
+    if let Some(r) = not_modified(cx, Some(g.root_hash))? {
+        return Ok(r);
+    }
+    let res = if svg {
+        text("image/svg+xml", crate::pages::graph_svg(&ctx.tenant.slug, &g))
+    } else {
+        #[derive(Serialize)]
+        struct Out<'a> {
+            project: &'a str,
+            root_hash: Hash,
+            #[serde(flatten)]
+            graph: &'a solidate_app::core::graph::Graph,
+        }
+        json(
+            StatusCode::OK,
+            &Out {
+                project: &g.project.slug,
+                root_hash: g.root_hash,
+                graph: &g.graph,
+            },
+        )
+    };
+    Ok(with_etag(res, Some(g.root_hash)))
+}
+
+#[query_params]
 struct ChangesQuery {
     /// Cursor from a previous response or an RFC 3339 timestamp.
     since: Option<String>,

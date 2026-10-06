@@ -537,40 +537,7 @@ impl App {
         let p = project_by_slug(&mut tx, project).await?;
         ctx.require(Access::Read, Some(&p))?;
         let chain = tx.project_chain(p.id).await?;
-
-        let mut seen = HashSet::new();
-        let mut entries = Vec::new();
-        for owner in &chain {
-            for d in tx.documents(owner.id).await? {
-                if seen.insert(d.path.clone()) {
-                    entries.push(TreeEntry {
-                        path: d.path,
-                        title: d.title,
-                        owner: owner.slug.clone(),
-                        inherited: owner.id != p.id,
-                        sync_enabled: d.sync_enabled,
-                        human: d.human_hash,
-                        ai: d.ai_hash,
-                        updated_at: d.updated_at,
-                    });
-                }
-            }
-        }
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-
-        let mut m = Merkle::new();
-        for e in &entries {
-            for (variant, hash) in [(Variant::Human, e.human), (Variant::Ai, e.ai)] {
-                if let Some(h) = hash {
-                    m.insert(format!("{}@{variant}", e.path), h);
-                }
-            }
-        }
-        Ok(Tree {
-            project: p,
-            root_hash: m.finish(),
-            entries,
-        })
+        effective_tree(&mut tx, p, &chain).await
     }
 
     /// Revisions of one variant, newest first.
@@ -708,6 +675,43 @@ impl App {
             view: e.view,
         })
     }
+}
+
+/// Effective documents of `p` given its inheritance `chain` (child first).
+pub(crate) async fn effective_tree(tx: &mut TenantTx, p: Project, chain: &[Project]) -> Result<Tree> {
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    for owner in chain {
+        for d in tx.documents(owner.id).await? {
+            if seen.insert(d.path.clone()) {
+                entries.push(TreeEntry {
+                    path: d.path,
+                    title: d.title,
+                    owner: owner.slug.clone(),
+                    inherited: owner.id != p.id,
+                    sync_enabled: d.sync_enabled,
+                    human: d.human_hash,
+                    ai: d.ai_hash,
+                    updated_at: d.updated_at,
+                });
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let mut m = Merkle::new();
+    for e in &entries {
+        for (variant, hash) in [(Variant::Human, e.human), (Variant::Ai, e.ai)] {
+            if let Some(h) = hash {
+                m.insert(format!("{}@{variant}", e.path), h);
+            }
+        }
+    }
+    Ok(Tree {
+        project: p,
+        root_hash: m.finish(),
+        entries,
+    })
 }
 
 fn include_key(t: &LinkTarget) -> String {
